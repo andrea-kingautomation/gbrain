@@ -16,6 +16,11 @@ import cookieParser from 'cookie-parser';
 import cors from 'cors';
 import rateLimit from 'express-rate-limit';
 import { randomBytes, createHash } from 'crypto';
+// KOA STOPGAP PATCH (gbrain admin session persistence) — node fs/path/os for the
+// durable adminSessions store below. Re-apply after every gbrain upgrade.
+import { readFileSync as koaReadFile, writeFileSync as koaWriteFile, mkdirSync as koaMkdir } from 'node:fs';
+import { join as koaJoin, dirname as koaDirname } from 'node:path';
+import { homedir as koaHomedir } from 'node:os';
 import { safeHexEqual } from '../core/timing-safe.ts';
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
@@ -440,7 +445,36 @@ export async function runServeHttp(engine: BrainEngine, options: ServeHttpOption
   let bootstrapFromEnv: boolean = resolved.fromEnv;
   const bootstrapHash = createHash('sha256').update(bootstrapToken).digest('hex');
   const suppressBootstrapPrint = options.suppressBootstrapToken === true;
-  const adminSessions = new Map<string, number>(); // sessionId → expiresAt
+  // === KOA STOPGAP PATCH (gbrain admin session persistence) ===
+  // Upstream adminSessions is an in-memory Map, wiped on every serve restart
+  // (upgrade / patch re-apply / crash), forcing dashboard re-auth each time.
+  // Operator wants the Graphify dashboard to stay logged in (and eventually
+  // embed it on Notion as a live page), so back the store with a JSON file
+  // under ~/.gbrain. Identical Map interface => zero call-site changes; we only
+  // write-through on set/delete/clear and prune expired sessions on load.
+  const koaAdminSessFile = process.env.GBRAIN_ADMIN_SESSIONS_FILE
+    || koaJoin(koaHomedir(), '.gbrain', 'admin-sessions.json');
+  const adminSessions: Map<string, number> = (() => {
+    const m = new Map<string, number>();
+    try {
+      const obj = JSON.parse(koaReadFile(koaAdminSessFile, 'utf8')) as Record<string, number>;
+      const now = Date.now();
+      for (const [k, v] of Object.entries(obj)) if (typeof v === 'number' && v > now) m.set(k, v);
+    } catch { /* no file yet / unreadable — start empty */ }
+    const persist = () => {
+      try {
+        koaMkdir(koaDirname(koaAdminSessFile), { recursive: true });
+        const obj: Record<string, number> = {};
+        for (const [k, v] of m) obj[k] = v;
+        koaWriteFile(koaAdminSessFile, JSON.stringify(obj), { mode: 0o600 });
+      } catch { /* best-effort; never block auth on a disk error */ }
+    };
+    const _set = m.set.bind(m), _delete = m.delete.bind(m), _clear = m.clear.bind(m);
+    m.set = (k: string, v: number) => { const r = _set(k, v); persist(); return r; };
+    m.delete = (k: string) => { const r = _delete(k); persist(); return r; };
+    m.clear = () => { _clear(); persist(); };
+    return m;
+  })(); // sessionId → expiresAt (KOA: durable across restarts)
 
   // SSE clients for live activity feed
   const sseClients = new Set<express.Response>();

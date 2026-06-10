@@ -724,6 +724,12 @@ async function processPage(
   let newestEnd: string | null = null;
   let segmentsThisPage = 0;
   let pageInsertedTotal = 0;
+  // KOA Step B (2026-06-06): set true if any segment's chat() call failed
+  // for a transport/outage reason. When true we refuse to write the
+  // terminal audit row or advance the per-page checkpoint, so the page
+  // stays in backlog and is retried next cycle instead of being marked
+  // "done" with zero facts during a model outage (the Jun-5 freeze).
+  let pageHadCallError = false;
 
   for (const seg of segments) {
     if (state.segmentLimit > 0 && segmentsThisPage >= state.segmentLimit) break;
@@ -740,6 +746,12 @@ async function processPage(
         source: PER_SEGMENT_SOURCE_PREFIX,
         engine: state.engine,
         abortSignal: state.signal,
+        onCallError: (info) => {
+          pageHadCallError = true;
+          process.stderr.write(
+            `[extract-conversation-facts] ${page.slug} segment ${seg.startIso}..${seg.endIso} chat call failed (${info.reason}) — page will NOT be marked done; retried next cycle\n`,
+          );
+        },
       });
     } catch (err) {
       if (isAbortError(err)) throw err;
@@ -791,6 +803,15 @@ async function processPage(
     if (state.sleepMs > 0) await sleep(state.sleepMs);
   }
 
+  // KOA Step B (2026-06-06): if any segment's chat() call failed (outage /
+  // transport), suppress the resume-state update so the page is NOT marked
+  // done and NOT checkpoint-advanced. delete-orphans-first replay safety
+  // (D11) makes the next full re-run idempotent, so any facts inserted from
+  // segments that DID succeed this pass are safely re-extracted next cycle.
+  if (pageHadCallError && newestEnd !== null) {
+    newestEnd = null;
+  }
+
   // Eng-v2 C7 / E16: write terminal audit row after all segments commit
   // successfully. Only run when not dry-run AND we got through every
   // segment (no break on segmentLimit; that's an explicit partial run).
@@ -822,7 +843,9 @@ async function processPage(
   }
 
   process.stderr.write(
-    `[extract-conversation-facts] ${page.slug}: ${pageInsertedTotal} facts inserted across ${segmentsThisPage} segments\n`,
+    `[extract-conversation-facts] ${page.slug}: ${pageInsertedTotal} facts inserted across ${segmentsThisPage} segments${
+      pageHadCallError ? ' [CALL ERROR — not marked done, will retry]' : ''
+    }\n`,
   );
 
   state.result.pages_processed++;
