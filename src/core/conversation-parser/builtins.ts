@@ -179,6 +179,38 @@ export const BUILTIN_PATTERNS: readonly PatternEntry[] = [
   },
 
   {
+    id: 'koa-telegram-seat',
+    origin: 'builtin',
+    // KoA / OpenClaw seat export: `**[2026-06-09 09:24:02] openclaw:engineering** (assistant):`
+    // Full ISO date+time inline; speaker (may contain a colon) before the closing **;
+    // optional (role) suffix; body on the next line(s) -> multi_line.
+    regex:
+      /^\*\*\[(\d{4}-\d{2}-\d{2})\s+(\d{1,2}):(\d{2})(?::\d{2})?\]\s+(.+?)\*\*\s*(?:\([^)]*\))?\s*:\s*$/,
+    captures: {
+      date_group: 1,
+      hour_group: 2,
+      minute_group: 3,
+      speaker_group: 4,
+      text_group: 0, // body comes from next line (multi_line)
+    },
+    date_source: 'inline',
+    time_format: '24h',
+    timezone_policy: 'inline_utc',
+    multi_line: true,
+    quick_reject: /^\*\*\[\d{4}-/,
+    test_positive: [
+      '**[2026-06-09 09:24:02] openclaw:engineering** (assistant):',
+      '**[2026-05-27 05:27:29] Claude** (assistant):',
+      '**[2026-01-01 00:00:00] sdtherealone** (user):',
+    ],
+    test_negative: [
+      '**[18:37] G T:** hello',
+      '[15/03/24, 18:37:00] Alice: hello',
+    ],
+    source_doc: 'KoA OpenClaw Telegram-topic seat export (convert-topics-to-md.py)',
+  },
+
+  {
     id: 'telegram-text-export',
     origin: 'builtin',
     // Telegram Desktop's text-export shape: `Alice Doe, [Mar 15, 2024 at 6:37:00 PM]`
