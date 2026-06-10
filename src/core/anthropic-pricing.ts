@@ -31,6 +31,27 @@ export const ANTHROPIC_PRICING: Record<string, ModelPricing> = {
   'claude-opus-4-6':            { input:  5.00, output: 25.00 },
   'claude-3-5-sonnet-20241022': { input:  3.00, output: 15.00 },
   'claude-3-5-haiku-20241022':  { input:  0.80, output:  4.00 },
+  // KoA omniroute virtual models (route via local omniroute :20128). Priced so
+  // the BudgetTracker can enforce --max-cost; koa-claude-synth -> sonnet-class,
+  // koa-default -> adaptive (conservative mid estimate). Added 2026-06-04.
+  'koa-claude-synth':           { input:  3.00, output: 15.00 },
+  'koa-default':                { input:  1.50, output:  7.50 },
+  // koa-gbrain -> free-first combo (gemini free -> claude-haiku -> ce/gpt-5.4-mini).
+  // Low estimate reflects free/cheap lead; budget meter stays conservative. Added 2026-06-05.
+  'koa-gbrain':                 { input:  0.30, output:  1.20 },
+  // koa-gbrain-reasoning -> ce/claude-sonnet (Codex Everywhere @ ~6% of official price) lead -> ce/gpt-5.4-mini (@3%) -> free gemini insurance.
+  // Priced at the CE discount (6% of sonnet's 3.00/15.00) so the budget meter reflects real spend.
+  'koa-gbrain-reasoning':       { input:  0.18, output:  0.90 },
+  // cos OmniRoute taxonomy combos (combos.koa.json). Estimates reflect each combo's
+  // lead model so the budget meter works; actual cost is lower when free tiers serve. 2026-06-05.
+  'koa-floor':                  { input:  0.20, output:  0.80 },
+  'koa-fast':                   { input:  0.20, output:  0.80 },
+  'koa-judge':                  { input:  0.20, output:  0.80 },
+  'koa-smart':                  { input:  0.40, output:  1.60 },
+  'koa-code':                   { input:  1.00, output:  4.00 },
+  'koa-claude-haiku-resilient': { input:  0.80, output:  4.00 },
+  'koa-claude-sonnet-resilient':{ input:  3.00, output: 15.00 },
+  'koa-claude-opus-resilient':  { input:  5.00, output: 25.00 },
 };
 
 import { splitProviderModelId } from './model-id.ts';

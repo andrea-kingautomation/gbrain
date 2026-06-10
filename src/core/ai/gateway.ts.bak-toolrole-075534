@@ -1974,38 +1974,12 @@ async function resolveExpansionProvider(modelStr: string): Promise<{ model: any;
   return { model, recipe, modelId: parsed.modelId };
 }
 
-/**
- * OmniRoute (and other OpenAI-compatible proxies) default to an SSE
- * text/event-stream response when the request body OMITS the `stream` field;
- * only an explicit `stream:false` yields a single JSON body. The AI SDK's
- * non-streaming generateText sends no `stream` field, then tries to JSON.parse
- * the event-stream body and throws "Invalid JSON response" (caught 2026-06-08:
- * every dream/synthesize/patterns chat call died here). This wrapper injects
- * `stream:false` only when `stream` is absent, so real streamText calls (which
- * set `stream:true`) pass through untouched.
- */
-const forceNonStreamFetch = (async (input: any, init?: any) => {
-  if (init?.body && typeof init.body === 'string') {
-    try {
-      const o = JSON.parse(init.body);
-      if (o && typeof o === 'object' && !Array.isArray(o) && o.stream === undefined) {
-        o.stream = false;
-        init = { ...init, body: JSON.stringify(o) };
-      }
-    } catch { /* non-JSON body (rare): leave untouched */ }
-  }
-  return fetch(input as any, init as any);
-}) as unknown as typeof fetch;
-
 function instantiateExpansion(recipe: Recipe, modelId: string, cfg: AIGatewayConfig): any {
   switch (recipe.implementation) {
     case 'native-openai': {
       const apiKey = cfg.env.OPENAI_API_KEY;
       if (!apiKey) throw new AIConfigError(`OpenAI expansion requires OPENAI_API_KEY.`, recipe.setup_hint);
-      const baseURL = cfg.base_urls?.[recipe.id];
-      // .chat() = Chat Completions API (what OmniRoute serves); .languageModel()
-      // defaults to the Responses API, which OmniRoute does not serve cleanly.
-      return createOpenAI({ apiKey, ...(baseURL ? { baseURL } : {}), fetch: forceNonStreamFetch }).chat(modelId);
+      return createOpenAI({ apiKey }).languageModel(modelId);
     }
     case 'native-google': {
       const apiKey = cfg.env.GOOGLE_GENERATIVE_AI_API_KEY;
@@ -2250,12 +2224,7 @@ function instantiateChat(recipe: Recipe, modelId: string, cfg: AIGatewayConfig):
     case 'native-openai': {
       const apiKey = cfg.env.OPENAI_API_KEY;
       if (!apiKey) throw new AIConfigError(`OpenAI chat requires OPENAI_API_KEY.`, recipe.setup_hint);
-      const baseURL = cfg.base_urls?.[recipe.id];
-      // .chat() = Chat Completions API (what OmniRoute serves); .languageModel()
-      // defaults to the Responses API, which OmniRoute does not serve cleanly.
-      // forceNonStreamFetch injects stream:false so the non-streaming SDK call
-      // gets a JSON body instead of OmniRoute's default SSE (see helper above).
-      return createOpenAI({ apiKey, ...(baseURL ? { baseURL } : {}), fetch: forceNonStreamFetch }).chat(modelId);
+      return createOpenAI({ apiKey }).languageModel(modelId);
     }
     case 'native-google': {
       const apiKey = cfg.env.GOOGLE_GENERATIVE_AI_API_KEY;
@@ -2784,32 +2753,10 @@ export async function toolLoop(opts: ToolLoopOpts): Promise<ToolLoopResult> {
 
     if (stopReason === 'aborted') break;
 
-    // Feed all tool results back. AI SDK v6 ModelMessage requires tool results
-    // in a `role:'tool'` message carrying typed ToolResultOutput parts. A
-    // `role:'user'` message with >1 tool-result part is rejected ("messages do
-    // not match the ModelMessage[] schema"); single-result user messages slip
-    // through SDK coercion, which is why single-tool-call writer runs succeeded
-    // but every PARALLEL-tool-call writer subagent died (gbrain #1764). Emit the
-    // canonical shape: role 'tool' + each output wrapped as text/json/error-text.
-    // === KOA STOPGAP PATCH (gbrain #1764 tool-result role+output) — re-apply after every gbrain upgrade ===
+    // Feed all tool results back as a single user message.
     const userMessageIdx = messageIdx++;
     void userMessageIdx;
-    messages.push({
-      role: 'tool',
-      content: toolResultBlocks.map(b => {
-        const tr = b as { type: 'tool-result'; toolCallId: string; toolName: string; output: unknown; isError?: boolean };
-        return {
-          type: 'tool-result',
-          toolCallId: tr.toolCallId,
-          toolName: tr.toolName,
-          output: tr.isError
-            ? { type: 'error-text', value: String(tr.output) }
-            : typeof tr.output === 'string'
-              ? { type: 'text', value: tr.output }
-              : { type: 'json', value: tr.output as any },
-        };
-      }) as any,
-    });
+    messages.push({ role: 'user', content: toolResultBlocks });
 
     turnIdx++;
   }

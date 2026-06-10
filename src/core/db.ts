@@ -236,7 +236,15 @@ export async function disconnect(): Promise<void> {
     // instance-pool callers go through here.
     logDbDisconnect('postgres', 'module');
   } catch { /* best-effort; never block disconnect on audit failure */ }
-  if (sql) {
+  // === KOA STOPGAP PATCH (gbrain #1570) — re-apply after every gbrain upgrade ===
+  // Do NOT null the long-running module singleton mid-cycle. A transient blip was
+  // triggering postgres-engine.reconnect() -> this disconnect(), which set sql=null;
+  // concurrent minion-worker queue ops (worker.promoteDelayed -> executeRaw) then
+  // threw "connect() has not been called", which broke the dream `synthesize` phase
+  // (synth_pages=0 every run). postgres.js auto-reconnects dead connections inside
+  // the pool, so keeping the singleton alive for the process lifetime is safe and
+  // fixes synthesis. Only release on an explicit full shutdown (env-gated).
+  if (sql && process.env.GBRAIN_FORCE_DISCONNECT === '1') {
     await sql.end();
     sql = null;
     connectedUrl = null;

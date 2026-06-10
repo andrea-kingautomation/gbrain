@@ -1,0 +1,193 @@
+#!/usr/bin/env node
+/**
+ * Vexa auto-join orchestration. Two modes:
+ *   node vexa-autojoin.mjs dispatch   # poll calendar, send a bot to imminent meetings
+ *   node vexa-autojoin.mjs collect    # pull finished transcripts -> gbrain meeting pages
+ *
+ * Calendar is read through Composio (GOOGLECALENDAR_EVENTS_LIST, project key,
+ * user_id auto-resolved from the connected googlecalendar account). The bot is
+ * dispatched to Vexa cloud (POST /bots). Transcripts are written as `meeting`-typed
+ * pages into an isolated gbrain source (vexa-meetings) so facts extraction can run.
+ *
+ * Secrets (env, or read from 1Password if absent):
+ *   COMPOSIO_API_KEY  (1P: "composio project api key" / credential)
+ *   VEXA_API_KEY      (1P: "vexa.ai meeting bot" / credential)
+ *
+ * State (dedupe): ~/.gbrain/state/vexa-dispatched.json
+ */
+import { execSync } from 'child_process';
+import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'fs';
+import { join } from 'path';
+import os from 'os';
+
+const COMPOSIO_BASE = 'https://backend.composio.dev/api/v3';
+const VEXA_BASE = 'https://api.cloud.vexa.ai';
+const STATE_DIR = join(os.homedir(), '.gbrain', 'state');
+const DISPATCH_STATE = join(STATE_DIR, 'vexa-dispatched.json');
+const MEETINGS_SRC = join(os.homedir(), '.gbrain', 'sources', 'vexa-meetings');
+const JOIN_WINDOW_MIN = 5;     // dispatch a bot when a meeting starts within this window
+const op = (item) => { try { return execSync(`/home/claude/bin/op read 'op://api keys/${item}/credential'`, { encoding: 'utf8' }).trim(); } catch { return ''; } };
+const COMPOSIO_API_KEY = process.env.COMPOSIO_API_KEY || op('composio project api key');
+const VEXA_API_KEY = process.env.VEXA_API_KEY || op('vexa.ai meeting bot');
+
+async function composio(path, opts = {}) {
+  const r = await fetch(COMPOSIO_BASE + path, { ...opts, headers: { 'x-api-key': COMPOSIO_API_KEY, 'Content-Type': 'application/json', ...(opts.headers || {}) } });
+  return { status: r.status, json: await r.json().catch(() => null) };
+}
+async function vexa(path, opts = {}) {
+  const r = await fetch(VEXA_BASE + path, { ...opts, headers: { 'X-API-Key': VEXA_API_KEY, 'Content-Type': 'application/json', ...(opts.headers || {}) } });
+  return { status: r.status, json: await r.json().catch(() => null) };
+}
+function loadState() { try { return JSON.parse(readFileSync(DISPATCH_STATE, 'utf8')); } catch { return { dispatched: {}, ingested: {} }; } }
+function saveState(s) { if (!existsSync(STATE_DIR)) mkdirSync(STATE_DIR, { recursive: true }); writeFileSync(DISPATCH_STATE, JSON.stringify(s, null, 2)); }
+
+// Resolve ALL active googlecalendar CONNECTIONS. The operator connected several Google
+// accounts (gmail x2 + kingofautomation) under the SAME entity user_id "koa"; deduping by
+// user_id made Composio resolve to a single default connection and silently miss the others
+// (root cause of the 2026-06-07 "scheduled meeting not joined" bug). Keep each connection.
+async function calendarConnections() {
+  const { json } = await composio('/connected_accounts?limit=200');
+  const items = json?.items || json?.data || [];
+  return items
+    .filter(a => String(a.toolkit?.slug || '').toLowerCase() === 'googlecalendar' && a.status === 'ACTIVE')
+    .map(a => ({ id: a.id, user_id: a.user_id }))
+    .filter(a => a.id && a.user_id);
+}
+
+// All calendars the operator can write on for a connection (skip read-only holiday calendars).
+async function ownedCalendarIds(user_id, connected_account_id) {
+  const { json } = await composio('/tools/execute/GOOGLECALENDAR_LIST_CALENDARS', {
+    method: 'POST', body: JSON.stringify({ user_id, connected_account_id, arguments: {} }),
+  });
+  const items = json?.data?.items || json?.response_data?.items || json?.items || [];
+  const ids = items.filter(c => ['owner', 'writer'].includes(c.accessRole)).map(c => c.id);
+  return ids.length ? ids : ['primary'];
+}
+
+// Pull platform + native_meeting_id from an event's conferencing data.
+function extractMeeting(ev) {
+  const link = ev.hangoutLink || (ev.conferenceData?.entryPoints || []).find(e => e.entryPointType === 'video')?.uri || '';
+  let m;
+  if ((m = link.match(/meet\.google\.com\/([a-z]+-[a-z]+-[a-z]+)/i))) return { platform: 'google_meet', native_meeting_id: m[1], link };
+  if ((m = link.match(/zoom\.us\/j\/(\d+)/i))) {
+    const pwd = (link.match(/[?&]pwd=([^&\s]+)/i) || [])[1] || '';   // Zoom NEEDS the pwd token as passcode, else the bot stalls in needs_human_help
+    return { platform: 'zoom', native_meeting_id: m[1], link, passcode: pwd };
+  }
+  if (/teams\.microsoft\.com/i.test(link)) return { platform: 'teams', native_meeting_id: link, link };
+  return null;
+}
+
+async function dispatch() {
+  const state = loadState();
+  const conns = await calendarConnections();
+  if (!conns.length) { console.log(JSON.stringify({ error: 'no active googlecalendar account' })); return; }
+  const now = new Date();
+  const timeMax = new Date(now.getTime() + JOIN_WINDOW_MIN * 60000);
+  // Poll EVERY connection and EVERY owned calendar within it; merge events (tagged with connId).
+  const events = [];
+  for (const conn of conns) {
+    let calIds;
+    try { calIds = await ownedCalendarIds(conn.user_id, conn.id); } catch { calIds = ['primary']; }
+    for (const calendarId of calIds) {
+      const { json } = await composio('/tools/execute/GOOGLECALENDAR_EVENTS_LIST', {
+        method: 'POST',
+        body: JSON.stringify({ user_id: conn.user_id, connected_account_id: conn.id, arguments: { calendarId, timeMin: now.toISOString(), timeMax: timeMax.toISOString(), singleEvents: true, orderBy: 'startTime', maxResults: 20 } }),
+      });
+      const evs = json?.data?.items || json?.response_data?.items || json?.items || [];
+      for (const e of evs) events.push({ ev: e, connId: conn.id });
+    }
+  }
+  const acted = [];
+  for (const { ev, connId } of events) {
+    // Policy: only join meetings the operator is attending (organizer or accepted).
+    const self = (ev.attendees || []).find(a => a.self);
+    const attending = ev.organizer?.self || (self && self.responseStatus === 'accepted') || !ev.attendees;
+    const meet = extractMeeting(ev);
+    if (!attending || !meet) continue;
+    const dispKey = `${connId}:${ev.id}`;                 // event ids are per-calendar; namespace by connection
+    if (state.dispatched[dispKey]) continue;
+    const res = await vexa('/bots', { method: 'POST', body: JSON.stringify(meet.passcode ? { platform: meet.platform, native_meeting_id: meet.native_meeting_id, passcode: meet.passcode } : { platform: meet.platform, native_meeting_id: meet.native_meeting_id }) });
+    state.dispatched[dispKey] = { at: now.toISOString(), platform: meet.platform, native_meeting_id: meet.native_meeting_id, title: ev.summary || '', vexa_status: res.status };
+    acted.push({ title: ev.summary, ...meet, vexa_status: res.status });
+  }
+  saveState(state);
+  console.log(JSON.stringify({ mode: 'dispatch', connections: conns.length, events: events.length, dispatched: acted }, null, 2));
+}
+
+async function collect() {
+  const state = loadState();
+  if (!existsSync(MEETINGS_SRC)) mkdirSync(MEETINGS_SRC, { recursive: true });
+  const { json } = await vexa('/meetings');
+  const meetings = json?.meetings || [];
+  const written = [];
+  for (const mtg of meetings) {
+    const id = String(mtg.id || mtg.native_meeting_id || `${mtg.platform}_${mtg.start_time}`);
+    if (state.ingested[id]) continue;
+    // fetch transcript. segments live at /transcripts/{platform}/{id}; /meetings/{p}/{id} returns 405 (fixed 2026-06-06).
+    const { json: t } = await vexa(`/transcripts/${mtg.platform}/${mtg.native_meeting_id || id}`);
+    const segs = t?.segments || t?.transcript || [];
+    if (!segs.length) continue;   // not finished yet; try again next run
+    const date = (mtg.start_time || '').slice(0, 10);
+    const speakers = [...new Set(segs.map(s => s.speaker).filter(Boolean))];
+    const fm = ['---', 'type: meeting', `source_id: vexa_${id}`, 'source_type: vexa',
+      `title: ${JSON.stringify(mtg.title || mtg.summary || 'Meeting')}`, `date: ${date}`,
+      `location: ${mtg.platform}`, `participants: [${speakers.join(', ')}]`, '---', '', `# ${mtg.title || 'Meeting'}`, '', '## Transcript'].join('\n');
+    const body = segs.map(s => {
+      const tm = (s.start || s.timestamp || '').toString();
+      const hhmm = (tm.match(/(\d{1,2}):(\d{2})/) || [,'00','00']).slice(1, 3).join(':');
+      return `**${s.speaker || 'Speaker'}** (${date} ${hhmm}): ${(s.text || '').trim()}`;
+    }).join('\n\n');
+    writeFileSync(join(MEETINGS_SRC, `${id}.md`), fm + '\n' + body + '\n');
+    state.ingested[id] = { at: new Date().toISOString(), title: mtg.title };
+    written.push(id);
+  }
+  saveState(state);
+  console.log(JSON.stringify({ mode: 'collect', total: meetings.length, written }, null, 2));
+}
+
+// Impromptu: join a meeting on the spot from a pasted URL (no calendar event needed).
+//   node vexa-autojoin.mjs join "https://meet.google.com/abc-defg-hij"
+async function joinMeeting(url) {
+  if (!url) { console.log(JSON.stringify({ error: 'usage: join <meeting-url>' })); return; }
+  const meet = extractMeeting({ hangoutLink: url });
+  if (!meet) { console.log(JSON.stringify({ error: 'unrecognized meeting URL', url })); return; }
+  const res = await vexa('/bots', { method: 'POST', body: JSON.stringify(meet.passcode ? { platform: meet.platform, native_meeting_id: meet.native_meeting_id, passcode: meet.passcode } : { platform: meet.platform, native_meeting_id: meet.native_meeting_id }) });
+  const state = loadState();
+  const key = `impromptu_${meet.platform}_${meet.native_meeting_id}`;
+  state.dispatched[key] = { at: new Date().toISOString(), platform: meet.platform, native_meeting_id: meet.native_meeting_id, title: 'impromptu', vexa_status: res.status };
+  saveState(state);
+  console.log(JSON.stringify({ mode: 'join', ...meet, vexa_status: res.status, vexa_response: res.json }, null, 2));
+}
+
+// Scan a designated Telegram topic JSON for meeting links and join any not yet dispatched.
+//   node vexa-autojoin.mjs watch-topic /home/claude/sessions/shared/topics/mXXXX_YYY.json
+async function watchTopic(file) {
+  if (!file || !existsSync(file)) { console.log(JSON.stringify({ error: 'topic file not found', file })); return; }
+  const state = loadState();
+  const data = JSON.parse(readFileSync(file, 'utf8'));
+  const msgs = Array.isArray(data) ? data : (data.messages || data.history || []);
+  const rx = /(https?:\/\/[^\s]*(?:meet\.google\.com|zoom\.us\/j\/|teams\.microsoft\.com)[^\s]*)/ig;
+  const acted = [];
+  for (const m of msgs) {
+    const text = (m.text || m.content || '') + '';
+    let match;
+    while ((match = rx.exec(text))) {
+      const meet = extractMeeting({ hangoutLink: match[1] });
+      if (!meet) continue;
+      const key = `topic_${meet.platform}_${meet.native_meeting_id}`;
+      if (state.dispatched[key]) continue;
+      const res = await vexa('/bots', { method: 'POST', body: JSON.stringify(meet.passcode ? { platform: meet.platform, native_meeting_id: meet.native_meeting_id, passcode: meet.passcode } : { platform: meet.platform, native_meeting_id: meet.native_meeting_id }) });
+      state.dispatched[key] = { at: new Date().toISOString(), ...meet, title: 'from-topic', vexa_status: res.status };
+      acted.push({ ...meet, vexa_status: res.status });
+    }
+  }
+  saveState(state);
+  console.log(JSON.stringify({ mode: 'watch-topic', joined: acted }, null, 2));
+}
+
+const mode = process.argv[2];
+if (mode === 'dispatch') await dispatch();
+else if (mode === 'collect') await collect();
+else if (mode === "join") await joinMeeting(process.argv[3]);
+else if (mode === 'watch-topic') await watchTopic(process.argv[3]);
+else { console.log('usage: vexa-autojoin.mjs dispatch|collect|join <url>|watch-topic <file>'); process.exit(1); }

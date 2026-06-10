@@ -780,8 +780,10 @@ async function runSubagentViaGateway(args: GatewayRunArgs): Promise<SubagentResu
   // Convert prior Anthropic-shape messages → ChatMessage with ChatBlock content.
   // v1 rows store Anthropic content blocks ({type:'tool_use'|'tool_result'|...});
   // we adapt them to ChatBlock shape (type: 'tool-call' | 'tool-result' | 'text').
-  const priorToolExecs = await loadPriorTools(engine, ctx.id);
-  const priorChatMessages: ChatMessage[] = reconstructReplaySeed(priorMessages, priorToolExecs);
+  const priorChatMessages: ChatMessage[] = priorMessages.map(m => ({
+    role: m.role as 'user' | 'assistant',
+    content: adaptContentBlocksToChatBlocks(m.content_blocks),
+  }));
 
   // Initial seed message if no prior state.
   const initialMessages: ChatMessage[] = priorChatMessages.length === 0
@@ -1008,72 +1010,6 @@ function adaptContentBlocksToChatBlocks(blocks: unknown): ChatBlock[] | string {
         isError: block.isError === true,
       });
     }
-  }
-  return out;
-}
-
-/**
- * Crash-replay seed reconstruction (gbrain #1764 follow-up).
- *
- * Tool-result messages are intentionally NOT persisted to `subagent_messages`
- * (only assistant turns are; tool outcomes live in `subagent_tool_executions`).
- * On a fresh run the gateway loop assembles the `role:'tool'` message in memory
- * and continues. But on crash-replay the seed is rebuilt from `subagent_messages`
- * alone, producing `[user, assistant(tool_use), assistant(tool_use)...]` with no
- * tool answers — the next `chat()` call is rejected by the provider with
- * "Tool results are missing for tool calls <id>". Any transient interruption
- * mid-subagent then becomes a PERMANENT death across all retries (observed: ~90%
- * of subagent jobs dead, attempts_made=3).
- *
- * This re-interleaves a `role:'tool'` message after every assistant turn that
- * issued tool calls, rebuilt from the persisted executions, so the seed is a
- * valid sequence. The shape mirrors the gateway loop's own tool-message assembly
- * (role 'tool' + typed ToolResultOutput parts) — `chat()` passes messages
- * straight to generateText, so the wire shape must be the SDK's, not the
- * ChatBlock 'tool-result' shape. Counting the synthesized tool messages also
- * realigns `nextMessageIdx` with the fresh-run messageIdx numbering (assistant +
- * tool = 2 indices per turn). Pure (no DB) so it is unit-testable directly.
- */
-export function reconstructReplaySeed(
-  priorMessages: PersistedMessage[],
-  toolExecs: PersistedToolExec[],
-): ChatMessage[] {
-  const execByMsgIdx = new Map<number, Map<string, PersistedToolExec>>();
-  for (const ex of toolExecs) {
-    let byCall = execByMsgIdx.get(ex.message_idx);
-    if (!byCall) { byCall = new Map(); execByMsgIdx.set(ex.message_idx, byCall); }
-    byCall.set(ex.tool_use_id, ex);
-  }
-
-  const out: ChatMessage[] = [];
-  for (const m of priorMessages) {
-    const content = adaptContentBlocksToChatBlocks(m.content_blocks);
-    out.push({ role: m.role, content });
-    if (m.role !== 'assistant' || !Array.isArray(content)) continue;
-    const toolCalls = content.filter(
-      (b): b is Extract<ChatBlock, { type: 'tool-call' }> => b.type === 'tool-call',
-    );
-    if (toolCalls.length === 0) continue;
-    const byCall = execByMsgIdx.get(m.message_idx) ?? new Map<string, PersistedToolExec>();
-    out.push({
-      role: 'tool',
-      content: toolCalls.map(tc => {
-        const ex = byCall.get(tc.toolCallId);
-        let output: { type: string; value: unknown };
-        if (!ex) {
-          output = { type: 'error-text', value: 'tool result not persisted before crash; re-issue if needed' };
-        } else if (ex.status === 'complete') {
-          output = typeof ex.output === 'string'
-            ? { type: 'text', value: ex.output }
-            : { type: 'json', value: ex.output };
-        } else if (ex.status === 'failed') {
-          output = { type: 'error-text', value: String(ex.error ?? ex.output ?? 'tool failed') };
-        } else {
-          output = { type: 'error-text', value: 'tool execution interrupted before completion; re-issue if needed' };
-        }
-        return { type: 'tool-result', toolCallId: tc.toolCallId, toolName: tc.toolName, output };
-      }) as unknown as ChatBlock[],
-    });
   }
   return out;
 }

@@ -30,7 +30,7 @@ export const openai: Recipe = {
       price_last_verified: '2026-04-20',
     },
     chat: {
-      models: ['gpt-5.2', 'gpt-4o-mini'],
+      models: ['gpt-5.2', 'gpt-4o-mini', 'koa-default', 'koa-claude-synth', 'koa-gbrain', 'koa-gbrain-reasoning', 'koa-smart', 'koa-code', 'koa-floor', 'koa-fast', 'koa-claude-sonnet-resilient', 'koa-claude-haiku-resilient', 'koa-claude-opus-resilient', 'koa-judge'],
       supports_tools: true,
       supports_subagent_loop: true,
       supports_prompt_cache: false,

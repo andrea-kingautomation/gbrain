@@ -110,17 +110,9 @@ export async function runPhaseConsolidate(
     bucketsProcessed += 1;
     const clusters = clusterFacts(unconsolidated, threshold);
 
-    // Resolve entity_slug → page_id. Entity pages live in the `default`
-    // source while facts are extracted into per-source corpora
-    // (fathom-meetings, koa-conversations, ...). Resolve CROSS-SOURCE:
-    // prefer the fact's own source, then `default`, then any source — else
-    // every meeting/conversation fact bucket fails to resolve and 0 takes
-    // are ever promoted. (cross-source fix 2026-06-07, same class as the
-    // timeline-from-meetings bug.)
+    // Resolve entity_slug → page_id. If page missing in this source, skip.
     const pageRows = await engine.executeRaw<{ id: number }>(
-      `SELECT id FROM pages WHERE slug = $2 AND deleted_at IS NULL
-       ORDER BY (source_id = $1) DESC, (source_id = 'default') DESC, id ASC
-       LIMIT 1`,
+      `SELECT id FROM pages WHERE source_id = $1 AND slug = $2 AND deleted_at IS NULL LIMIT 1`,
       [b.source_id, b.entity_slug],
     );
     if (pageRows.length === 0) continue;

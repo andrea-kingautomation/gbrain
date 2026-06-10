@@ -362,13 +362,6 @@ class ProposeTakesPhase extends BaseCyclePhase {
       warnings: [],
     };
 
-    // Per-phase model routing: propose_takes drafts gradeable opinions, so route
-    // it to the configured reasoning combo when set (models.propose_takes), else
-    // the cycle default. A weak model here = junk opinions. (2026-06-07)
-    const proposeModelCfg = await engine.getConfig('models.propose_takes').catch(() => null);
-    const proposeModel = (typeof proposeModelCfg === 'string' && proposeModelCfg.length > 0)
-      ? proposeModelCfg : (opts.model || 'claude-sonnet-4-6');
-
     // Load pages eligible for proposal. Source-scoped per BaseCyclePhase.
     const pageFilters: PageFilters = {
       ...scope,
@@ -412,7 +405,7 @@ class ProposeTakesPhase extends BaseCyclePhase {
 
       // Budget pre-check before the LLM call. Estimate: ~1500 input tokens + 500 output.
       const budget = this.checkBudget({
-        modelId: proposeModel,
+        modelId: opts.model ?? 'claude-sonnet-4-6',
         estimatedInputTokens: 1500,
         maxOutputTokens: 500,
       });
@@ -431,7 +424,7 @@ class ProposeTakesPhase extends BaseCyclePhase {
           pagePath: page.slug,
           pageBody: body,
           existingTakes,
-          modelHint: proposeModel,
+          modelHint: opts.model,
         });
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
@@ -465,7 +458,7 @@ class ProposeTakesPhase extends BaseCyclePhase {
             p.weight,
             p.domain ?? null,
             JSON.stringify(existingTakes),
-            proposeModel,
+            opts.model ?? 'claude-sonnet-4-6',
           ],
         );
         result.proposals_inserted += 1;
@@ -476,47 +469,31 @@ class ProposeTakesPhase extends BaseCyclePhase {
 
     // v0.42 Wave B3: receipt + rollup for propose_takes. Source-scoped
     // via the read scope. Receipt only when proposals actually written.
-    // Derive the receipt's source from the scope, else from the pages just
-    // processed (a scoped run shares one source). Crucially, do NOT fall back
-    // to the federated `default` source: a source-less run that wrote its
-    // receipt/rollup to `default` would leak operational metadata across the
-    // personal/business wall (this is exactly how a takes.proposed/personal
-    // receipt once became globally readable). If no real source resolves, skip
-    // these operational writes and surface it — the proposals themselves are
-    // already correctly source-tagged from page.source_id above.
-    const sourceIdForReceipt =
-      scope.sourceId ?? pages.find((p) => p.source_id)?.source_id ?? '';
-    if (!sourceIdForReceipt) {
-      if (result.proposals_inserted > 0)
-        console.error(
-          `[propose_takes] no source scope resolved for ${result.proposals_inserted} proposals — skipping receipt + rollup to avoid writing into the federated default source`,
-        );
-    } else {
-      if (result.proposals_inserted > 0) {
-        try {
-          await writeReceipt(engine, {
-            kind: 'takes.proposed',
-            source_id: sourceIdForReceipt,
-            run_id: proposalRunId,
-            round: 'single',
-            extracted_at: new Date().toISOString(),
-            total_rows: result.proposals_inserted,
-            cost_usd: 0, // tracker isn't exposed at this layer; cost tracked centrally
-            summary:
-              `Proposed ${result.proposals_inserted} new takes from ${result.pages_scanned} pages ` +
-              `(${result.cache_hits} cached).`,
-          });
-        } catch (err) {
-          console.error(`[propose_takes] receipt write failed: ${(err as Error).message}`);
-        }
+    const sourceIdForReceipt = scope.sourceId ?? 'default';
+    if (result.proposals_inserted > 0) {
+      try {
+        await writeReceipt(engine, {
+          kind: 'takes.proposed',
+          source_id: sourceIdForReceipt,
+          run_id: proposalRunId,
+          round: 'single',
+          extracted_at: new Date().toISOString(),
+          total_rows: result.proposals_inserted,
+          cost_usd: 0, // tracker isn't exposed at this layer; cost tracked centrally
+          summary:
+            `Proposed ${result.proposals_inserted} new takes from ${result.pages_scanned} pages ` +
+            `(${result.cache_hits} cached).`,
+        });
+      } catch (err) {
+        console.error(`[propose_takes] receipt write failed: ${(err as Error).message}`);
       }
-      await upsertExtractRollup(engine, {
-        kind: 'takes.proposed',
-        source_id: sourceIdForReceipt,
-        round_completed_delta: result.budget_exhausted ? 0 : 1,
-        halt_delta: result.budget_exhausted ? 1 : 0,
-      });
     }
+    await upsertExtractRollup(engine, {
+      kind: 'takes.proposed',
+      source_id: sourceIdForReceipt,
+      round_completed_delta: result.budget_exhausted ? 0 : 1,
+      halt_delta: result.budget_exhausted ? 1 : 0,
+    });
 
     return {
       summary: `propose_takes: scanned ${result.pages_scanned} pages, ${result.cache_hits} cached, ${result.proposals_inserted} new proposals (run ${proposalRunId})`,

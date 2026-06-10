@@ -1,0 +1,5 @@
+# Librarian background-output topic (operator msg 7506, link https://t.me/c/3818046085/923)
+# All non-interactive librarian output (dry-run slates, publish confirmations, alerts) routes here.
+chat_id=-1003818046085
+message_thread_id=923
+group=personal

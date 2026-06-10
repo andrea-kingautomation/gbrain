@@ -1,0 +1,119 @@
+{
+  "title": "Andrea's Operating Principles",
+  "assetType": "Principles",
+  "themes": ["self-knowledge", "trust", "reliability", "routing", "autonomy", "provenance"],
+  "sources": 149,
+  "summary": "Ten principles I keep living by, pulled together by G-Brain from 149 conversations about building the agentic OS. I never wrote them down in one place. They are the patterns that kept repeating.",
+  "intro": "Nobody wrote these down. They are the patterns that keep showing up across 149 separate conversations while I build, break, and rebuild this thing. G-Brain pulled them into one place. Read it as a mirror: this is what my own decisions, corrections, and frustrations keep optimising for, whether I meant them to or not.",
+  "principles": [
+    {
+      "name": "Trust is earned with proof, not reassurance",
+      "statement": "I don't trust a system because it tells me it's fine. I trust it when it shows me what actually happened.",
+      "meaning": "Did the routing fire? Which model answered? Was memory really used, and how much of it? A dashboard that looks alive while it's broken underneath is worse than an honest outage, because it hides the thing that's actually wrong. \"Done\" with nothing to show for it is not done.",
+      "evidence": [
+        "Trust needs durable proof, not verbal reassurance",
+        "Observability is the trust surface; trust increases with operational proof, not a polished answer",
+        "Truthful telemetry beats comforting telemetry",
+        "Fake completions are a reliability violation"
+      ]
+    },
+    {
+      "name": "Let agents watch freely, let me approve the big moves",
+      "statement": "Agents should notice, diagnose, and prep work on their own. Anything I can't undo waits for my yes.",
+      "meaning": "Watching, diagnosing, staging reversible work: go for it, no need to ask. But touching the brain, my identity, or anything with a big blast radius waits for me. Background processes stay off until the part I actually use every day is proven solid.",
+      "evidence": [
+        "High-blast-radius brain upgrades need gated autonomy",
+        "Gate background entropy until interactive is stable",
+        "Manual override as the boundary for smart routing",
+        "Autonomy is welcome for detection and reversible preparation, not high-blast-radius mutation"
+      ]
+    },
+    {
+      "name": "I upgrade for reliability, not size",
+      "statement": "Something becomes mission-critical when it starts breaking things I depend on, not when it gets big.",
+      "meaning": "The brain is tiny in bytes and still one of the most important things I run. I don't move to heavier infrastructure because something got large. I move when failures start interrupting how I think and how my agents coordinate.",
+      "evidence": [
+        "Reliability over scale in the personal brain",
+        "Migrate for reliability, not scale",
+        "Preference for cheap, reliable autopilot over brand-specific models"
+      ]
+    },
+    {
+      "name": "Most intelligence for the least money, routed smartly",
+      "statement": "The system that picks the right model matters more than any single model.",
+      "meaning": "What I actually want is the best work for the lowest cost, with the system choosing the cheapest path that's still good enough and only spending more when the task really needs it. How hard to think is just another dial to route on, not a setting I lock in advance.",
+      "evidence": [
+        "Agnostic smart routing as cost-per-intelligence infrastructure",
+        "Adaptive effort as the missing cost axis",
+        "Effort is a routing dimension, not a model setting",
+        "Intelligence-first fallback chains"
+      ]
+    },
+    {
+      "name": "One source of truth, never blend them",
+      "statement": "Every fact has one home and a clear order of authority. When two places disagree, I fix the wrong one. I don't average them.",
+      "meaning": "There's a chain: the canonical version first, then the synced brain, then the working files, then chat memory. If something downstream contradicts the canon, I trace where it got polluted and repair it at the source. Splitting the difference between two versions just creates a third one that's also wrong.",
+      "evidence": [
+        "Provenance first as a protective instinct",
+        "Infrastructure trust requires single-writer discipline",
+        "Routing is only real when provenance is visible",
+        "Identity pollution from synced agent files"
+      ]
+    },
+    {
+      "name": "I shouldn't have to keep up with my own stack",
+      "statement": "My agents should know the tools and the system so I don't have to memorise them.",
+      "meaning": "Notice when a command or a doc applies. Pull the current knowledge without me asking. Keep a live map of how everything fits together as it changes. The hard part was never the capability. It's keeping up with how fast it all moves. The fix is a brain that surfaces what I need, not another dashboard I have to remember to check.",
+      "evidence": [
+        "Agents should know the stack so the operator does not have to",
+        "The real pain is not capability but keeping up with change",
+        "Autonomous execution without making the founder operate terminals"
+      ]
+    },
+    {
+      "name": "Everything has a home, and nothing hides",
+      "statement": "Each part of the system has a clear job, a place I can inspect it, and a line it doesn't cross.",
+      "meaning": "The model, the harness, the workflow, the orchestrator stay separate things. The part that decides what to do stays on top. The part that executes stays underneath. Imported skills don't get to quietly change how the system behaves. The model is the brain, the harness is the hands.",
+      "evidence": [
+        "ACP should not bypass the signal detector",
+        "Layer separation: model, harness, workflow, orchestrator",
+        "Model is brain, harness is hands",
+        "Orthogonal routing layers"
+      ]
+    },
+    {
+      "name": "Think like a senior architect, not an order-taker",
+      "statement": "Before I act, I check the real system, not my assumption of it.",
+      "meaning": "Pull the actual sources, compare against how things really work right now, catch what's already outdated, then move. I want thoughtful conformance to the real system, not someone just doing what they're told. And once a call is made, I treat it as settled and execute it. No re-arguing it from scratch every time.",
+      "evidence": [
+        "Stop and understand before executing",
+        "Verification before architecture claims",
+        "Stop re-deriving approved calls (\"No re-planning\")",
+        "Refusing guesses at architectural boundaries"
+      ]
+    },
+    {
+      "name": "If it went quiet, something's wrong",
+      "statement": "Always tell me where things stand, unless the thing that reports is itself broken.",
+      "meaning": "Progress updates aren't noise. They're part of doing the job right. A stop message is a receipt that the work actually happened. But match the signal to the stakes: a warning shouldn't wake me up like a failure, and an alert should fire on a confirmed problem, not the first nervous blip.",
+      "evidence": [
+        "Silent work is a behavioral bug",
+        "Progress checkpoints are part of agent correctness",
+        "Warnings should not page me like failures",
+        "Alert on retried truth, not first-blip fear"
+      ]
+    },
+    {
+      "name": "Always keep a way back",
+      "statement": "I'd rather compact than restart, and I want an undo path for anything risky.",
+      "meaning": "Being able to safely reset is its own kind of trust. If the startup is fragile, the recovery is fragile too, and recovery is the part that actually matters when things go wrong. And \"done\" means it's live: pushed everywhere and behaving in the real world, not a green checkmark in one place.",
+      "evidence": [
+        "Compact, not restart, as an operational preference",
+        "Reversible brain reinit as trust repair",
+        "Bootstrap fragility is recoverability fragility",
+        "Committed means pushed and live"
+      ]
+    }
+  ],
+  "craftNote": "One tell I keep coming back to: I notice when the AI texture leaks through. \"No em dashes\" was never about punctuation. It's a test of whether the system actually respects how I write and can carry that across every seat. If it can't hold my voice, I don't fully trust it with the bigger things either."
+}

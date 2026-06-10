@@ -63,12 +63,9 @@ export async function runPhasePatterns(
       });
     }
 
-    // Submit one subagent for pattern detection. With agent.use_gateway_loop
-    // enabled, the subagent runs through the OmniRoute combo (koa-gbrain) and
-    // needs NO ANTHROPIC_API_KEY. Only skip when neither path is available.
-    const useGatewayLoop = await engine.getConfig('agent.use_gateway_loop').catch(() => null);
-    if (!process.env.ANTHROPIC_API_KEY && String(useGatewayLoop) !== 'true') {
-      return skipped('no_api_key', 'No ANTHROPIC_API_KEY and agent.use_gateway_loop is off; pattern detection skipped');
+    // Submit one subagent for pattern detection.
+    if (!process.env.ANTHROPIC_API_KEY) {
+      return skipped('no_api_key', 'ANTHROPIC_API_KEY unset; pattern detection skipped');
     }
 
     const allowedSlugPrefixes = await loadAllowedSlugPrefixes();

@@ -112,8 +112,8 @@ export async function extractTimelineFromMeetings(
     if (!dryRun) {
       try {
         entriesCreated += await engine.addTimelineEntriesBatch(batch);
-      } catch {
-        // batch error — drop; per-meeting progress continues
+      } catch (e) {
+        console.error('FLUSH ERR:', e && (e.message||e));
       }
     } else {
       entriesCreated += batch.length;
@@ -146,14 +146,15 @@ export async function extractTimelineFromMeetings(
     }
 
     // Body mentions (gazetteer-based). Skip self-mention (meeting page
-    // referencing itself by title). The cross-source guard in
-    // findMentionedEntities already drops mentions targeting a different
-    // source than the gazetteer entry was built from.
+    // referencing itself by title). Cross-source is allowed here: meetings
+    // live in `*-meetings` sources while the shared entity pages live in
+    // `default`, so without this flag every mention is dropped (0 entries).
     const body = meeting.compiled_truth + '\n\n' + meeting.timeline;
     if (body.trim()) {
       const mentions = findMentionedEntities(body, gazetteer, {
         fromSlug: meeting.slug,
         fromSourceId: meeting.source_id,
+        allowCrossSource: true,
       });
       for (const m of mentions) {
         targets.set(`${m.source_id}::${m.slug}`, {
@@ -168,7 +169,12 @@ export async function extractTimelineFromMeetings(
       batch.push({
         slug: t.slug,
         source_id: t.source_id,
-        date: meeting.effective_date,
+        // effective_date comes back from the driver as a timestamptz (Date),
+        // which can't bind into unnest(...::text[]). Coerce to YYYY-MM-DD —
+        // the insert casts v.date::date anyway.
+        date: typeof meeting.effective_date === 'string'
+          ? meeting.effective_date.slice(0, 10)
+          : new Date(meeting.effective_date as unknown as string).toISOString().slice(0, 10),
         source: sourceKey,
         summary,
       });

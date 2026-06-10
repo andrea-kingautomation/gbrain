@@ -91,6 +91,15 @@ export interface ExtractInput {
   abortSignal?: AbortSignal;
   /** Cap on number of facts returned per turn. Defaults to 10. */
   maxFactsPerTurn?: number;
+  /**
+   * KOA Step B (2026-06-06): invoked when the underlying chat() call fails
+   * for a transport/config/outage reason (NOT a clean refusal or empty
+   * parse). Lets the batch caller distinguish "model call failed" from
+   * "model answered, no facts" so it does NOT advance the per-page
+   * checkpoint over a failed call (the Jun-5 silent-freeze class). The
+   * function still returns [] as before; this is a side-channel signal.
+   */
+  onCallError?: (info: { reason: string; error?: unknown }) => void;
 }
 
 /** A pre-INSERT fact ready for the engine.insertFact path. */
@@ -184,6 +193,9 @@ export async function extractFactsFromTurn(input: ExtractInput): Promise<Extract
     // Re-throw aborts; absorb other errors as "no extraction" — caller's
     // `put_page` backstop will still record the page itself.
     if (isAbort(err)) throw err;
+    // KOA Step B: signal a real call failure so a batch caller can avoid
+    // advancing its checkpoint over an outage (silent-freeze prevention).
+    input.onCallError?.({ reason: 'chat_call_failed', error: err });
     return [];
   }
 

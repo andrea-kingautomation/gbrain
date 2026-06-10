@@ -97,6 +97,14 @@ export interface FindMentionsOpts {
   fromSlug: string;
   /** Source id of the page being scanned. Used for cross-source guard. */
   fromSourceId: string;
+  /**
+   * When true, allow a mention in source A to target an entity in source B.
+   * Default false (deliberate per-source isolation). The timeline-from-meetings
+   * extractor sets this so meetings (source `*-meetings`) can link the shared
+   * entity pages (source `default`). Read-time federated_read scopes still
+   * control visibility — this only governs edge creation at extraction time.
+   */
+  allowCrossSource?: boolean;
 }
 
 // ============================================================
@@ -284,7 +292,7 @@ export function findMentionedEntities(
       i += matchedTokens;
       continue;
     }
-    if (matched.source_id !== opts.fromSourceId) {
+    if (!opts.allowCrossSource && matched.source_id !== opts.fromSourceId) {
       i += matchedTokens;
       continue;
     }
