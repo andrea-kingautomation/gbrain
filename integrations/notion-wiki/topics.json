@@ -1,20 +1,19 @@
 {
-  "_comment": "Discovered-topic registry for the self-building knowledge base. Topics are NOT hand-named; each row corresponds to a tag/entity cluster the brain formed in the live corpus (see discovery pass 2026-06-10). 'realm' drives which Ghost site a page graduates to and is decided by SUBJECT, not by source_id. 'sources' is the realm-scoped read-scope the generator queries (wall-safe). 'treatment' is the design family the brain picks per content shape via the html-anything / hallmark skills - it is a hint, not a hardcode; the generator re-confirms it from the cluster's page mix at build time.",
+  "_comment": "Discovered-topic registry for the self-building knowledge base. Topics are NOT hand-named; each row corresponds to a tag/entity cluster the brain formed in the live corpus (discovery pass 2026-06-10). 'realm' decides which Ghost site a page graduates to (KoA -> kingofautomation.com, personal -> andrea-ercolessi.ghost.io) and is decided by SUBJECT, not by source_id. 'sources' is the realm-scoped read-scope the generator queries. 'treatment'/'template' are design hints the brain re-confirms per content shape via the html-anything / hallmark skills; they are NOT hardcoded.",
   "realms": {
-    "koa": { "ghost_site": "kingofautomation.com", "sources": ["koa-conversations","koa-conversation-shards","business-synthesis","fathom-meetings","vexa-meetings"] },
-    "personal": { "ghost_site": "andrea-ercolessi.ghost.io", "sources": ["personal-synthesis","personal-conversations","personal-conversation-shards"] }
+    "koa": { "ghost_site": "kingofautomation.com", "sources": ["business-synthesis","koa-conversations","fathom-meetings","vexa-meetings"] },
+    "personal": { "ghost_site": "andrea-ercolessi.ghost.io", "sources": ["business-synthesis","personal-synthesis","personal-conversations"] }
   },
-  "_data_note": "VERIFIED 2026-06-10: all tag-bearing synthesis pages currently live in personal-synthesis (519/557 tagged); business-synthesis has 185 pages but 0 tags yet. So KoA-subject clusters are physically sourced from personal-synthesis today. Realm routing is therefore by SUBJECT (tag set), and any KoA page drawn from personal-synthesis must be operator-reviewed before going outward, because it originates in the ACL-walled source. This resolves once business-synthesis carries its own tagged corpus.",
+  "_data_note": "MIGRATED 2026-06-10: the legacy `personal-synthesis` bucket was verified to be 100% founder/KoA-workspace synthesis (342 provenance refs to the KoA Founder group, ZERO refs to the Personal group), so its 557 pages were moved into `business-synthesis` (now 742 pages, 519 tagged). KoA topics now source `business-synthesis` directly: no source_override, no wall-review gate. `personal-synthesis` is now empty, reserved for the genuine Personal group (-1003818046085) chain. Personal-brand blog topics (mental models, original ideas) currently source the founder's reflections from `business-synthesis` filtered by personal subject tags (the realm field still routes them to the personal Ghost site); they will pick up `personal-synthesis` automatically once the Personal-group chain produces synthesis. Reversal snapshot: ~/.gbrain/migration-2026-06-10-notion-wiki/.",
   "topics": [
     {
       "id": "koa-ai-routing",
       "title": "AI Routing & Model Intelligence",
       "realm": "koa",
       "tags": ["routing","ai-routing","model-routing","smart-router","omniroute","router","bifrost"],
-      "source_override": ["personal-synthesis"],
       "treatment": "system-blueprint",
       "template": "deck-blueprint",
-      "preview": "/home/claude/outputs/gbrain-preview-koa-ai-routing.html",
+      "preview": "/home/claude/outputs/gbrain-topic-koa-ai-routing.html",
       "status": "preview-rendered",
       "cluster_pages": 148
     },
@@ -23,7 +22,6 @@
       "title": "The Agentic OS",
       "realm": "koa",
       "tags": ["openclaw","agentic-os","agents","agent-chakra","delegation","agent-ops"],
-      "source_override": ["personal-synthesis"],
       "treatment": "system-map",
       "template": "deck-graphify-dark",
       "status": "discovered"
@@ -33,7 +31,6 @@
       "title": "Infrastructure & Reliability",
       "realm": "koa",
       "tags": ["infrastructure","reliability","operations","observability","ai-infrastructure","ai-operations"],
-      "source_override": ["personal-synthesis"],
       "treatment": "system-map",
       "template": "deck-blueprint",
       "status": "discovered"
@@ -43,7 +40,6 @@
       "title": "The Knowledge Brain",
       "realm": "koa",
       "tags": ["gbrain","provenance","multimodal"],
-      "source_override": ["personal-synthesis"],
       "treatment": "system-map",
       "template": "deck-graphify-dark",
       "status": "discovered"
@@ -53,7 +49,6 @@
       "title": "Trust & Verification in AI",
       "realm": "koa",
       "tags": ["trust","verification","debugging"],
-      "source_override": ["personal-synthesis"],
       "treatment": "report",
       "template": "data-report",
       "status": "discovered"
@@ -65,11 +60,11 @@
       "tags": ["self-knowledge","mental-model","reflection"],
       "treatment": "editorial-longread",
       "template": "web-proto-editorial",
-      "preview": "/home/claude/outputs/gbrain-preview-personal-mental-models.html",
+      "preview": "/home/claude/outputs/gbrain-topic-personal-mental-models.html",
       "status": "preview-rendered",
       "cluster_pages": 244,
       "subject_exclude_tags": ["routing","infrastructure","openclaw","gbrain"],
-      "_exclude_note": "personal-synthesis mixes the founder's self-reflection with KoA-subject conclusions; exclude pure-infra tags so this personal page does not duplicate the KoA pages (coherence + realm-split gate)."
+      "_exclude_note": "business-synthesis mixes the founder's self-reflection with KoA-subject conclusions; exclude pure-infra tags so this personal-brand page does not duplicate the KoA pages (coherence + realm-split gate)."
     },
     {
       "id": "personal-original-ideas",
@@ -78,6 +73,7 @@
       "tags": ["original","original-idea","pattern"],
       "treatment": "editorial-longread",
       "template": "article-magazine",
+      "subject_exclude_tags": ["routing","infrastructure","openclaw","gbrain"],
       "status": "discovered"
     }
   ]

@@ -108,18 +108,37 @@ function buildBrief(topic, reg, pages) {
   };
 }
 
-const DESIGN_BRIEF = (brief) => `You are the distillation + design pass of a self-building knowledge base.
-Render ONE self-contained HTML page (all CSS inline, no external deps, must render inside a Notion embed iframe and as an offline file). Add <meta name="robots" content="noindex,nofollow">.
+// Writing standard injected verbatim into the render prompt. Distilled from
+// /home/claude/skills/content-generation-standards/SKILL.md + personal-voice +
+// the hallmark skill's honest-copy discipline. This is the anti-jargon contract:
+// a page must read as if a sharp human wrote it for a sharp reader, not as a
+// buzzword-stacked machine summary.
+const WRITING_STANDARD = `WRITING STANDARD (non-negotiable — the page must read as coherent human prose, NOT jargon):
+- Lead with something concrete: a real decision, a real failure, a real tradeoff from the sources. Never open with "In today's world", "Let's dive in", "In the age of AI", or a definition.
+- Concrete before abstract. Prefer the specific artifact, number, or quote over a generic claim. If you do not have a real number, do NOT invent one and do NOT gesture at one.
+- Define every technical term in plain language the first time it appears. Assume the reader is intelligent but does not know this specific system. One clear clause is enough; do not over-explain.
+- Ban these words and their kin: seamless, game-changer, revolutionary, disruptive, empower, supercharge, unleash, elevate, robust, holistic, cutting-edge, unlock, leverage, transform, synergy, next-level, paradigm. Say the plain thing instead.
+- No buzzword stacking. One idea per sentence. If a sentence carries three abstract nouns in a row, rewrite it.
+- Vary sentence length and openers. Mix short punchy lines with longer reflective ones. Do not start consecutive sentences or sections with the same word or syntactic frame (e.g. not "On X: ... On Y: ...").
+- Active voice. Short paragraphs (1-3 sentences). Plenty of whitespace.
+- No validation padding ("great", "powerful", "important to note"), no hedging stacks ("might possibly perhaps"). State the thing.
+- Never describe the work or system as simple, easy, or straightforward.
+- NO EM-DASHES anywhere (no — character). Use a comma, a period, or a connecting word (and, so, which, because). No decorative hyphenated compounds where a space reads better.
+- Honest copy: every claim traces to a source page below. Preserve verbatim quotes exactly and attribute them to their provenance ref so a reader can verify. Invent nothing.
+- Before you emit, read the draft once as the reader would and cut any sentence that sounds like an AI template.`;
 
-TOPIC: ${brief.title} (realm: ${brief.realm})
-TREATMENT: ${brief.treatment} — follow the html-anything template "${brief.template}" and the hallmark disciplines (honest copy, structural variety, locked tokens, pre-emit critique stamp, mobile-safe). The design must FIT this topic's shape and must not look like a generic template.
+const DESIGN_BRIEF = (brief) => `You are the distillation + design pass of a self-building knowledge base. You turn a grounded research brief into ONE finished, publishable web page.
 
-HARD RULES:
-- Honest copy: every sentence must be grounded in the source pages below. Do NOT invent metrics, quotes, or facts.
-- Preserve verbatim quotes exactly; attribute provenance (the turn-refs) so the page is verifiable.
-- Self-contained, noindex, mobile-responsive at 320/375/414/768px.
+${WRITING_STANDARD}
 
-SOURCE PAGES (grounded corpus for this topic):
+DESIGN:
+Render ONE self-contained HTML page (all CSS inline, no external deps; it must render inside a Notion embed iframe AND as an offline file). Add <meta name="robots" content="noindex,nofollow">.
+- TOPIC: ${brief.title} (publishing realm: ${brief.realm})
+- TREATMENT: ${brief.treatment}. Follow the html-anything template "${brief.template}" as a starting structure, then apply the hallmark disciplines: structural variety (this page must NOT share the hero -> 3-card -> CTA rhythm of a generic template; let the content's actual shape drive the layout), locked design tokens (every colour/font as a named CSS variable, no inline hex mid-render), a pre-emit critique comment stamp, and mobile-responsiveness verified at 320/375/414/768px (no horizontal scroll).
+- The design must fit THIS topic's shape. A blueprint of a system reads differently from a set of personal reflections; do not reuse one rhythm for the other.
+- Surface the provenance (the source titles / turn-refs) somewhere on the page so the grounding is visible and verifiable.
+
+SOURCE PAGES (the ONLY material you may draw from — grounded corpus for this topic):
 ${brief.pages.map((p, i) => `[${i + 1}] ${p.title} (${p.date})\n${p.body.slice(0, 1400)}\nprovenance: ${p.provenance.join(", ") || "n/a"}`).join("\n\n")}
 
 Output ONLY the HTML document, nothing else.`;
@@ -139,13 +158,40 @@ async function render(brief) {
       model: OMNI_MODEL,
       messages: [{ role: "user", content: DESIGN_BRIEF(brief) }],
       temperature: 0.5,
+      stream: false,
+      max_tokens: 16000,
     }),
   });
-  const j = await res.json();
-  if (!res.ok) throw new Error(`OmniRoute ${res.status}: ${JSON.stringify(j).slice(0, 240)}`);
-  let html = j.choices?.[0]?.message?.content || "";
-  const a = html.indexOf("<!DOCTYPE"); const b = html.lastIndexOf("</html>");
-  if (a >= 0 && b > a) html = html.slice(a, b + 7);
+  const raw = await res.text();
+  if (!res.ok) throw new Error(`OmniRoute ${res.status}: ${raw.slice(0, 240)}`);
+  // The reasoning combo may answer as a single JSON object OR as an SSE stream
+  // ("data: {...}\n\n" chunks). Handle both: collect choices[].delta.content.
+  let html = "";
+  if (raw.trimStart().startsWith("data:")) {
+    for (const line of raw.split("\n")) {
+      const s = line.trim();
+      if (!s.startsWith("data:")) continue;
+      const payload = s.slice(5).trim();
+      if (payload === "[DONE]") break;
+      try {
+        const d = JSON.parse(payload);
+        html += d.choices?.[0]?.delta?.content || d.choices?.[0]?.message?.content || "";
+      } catch { /* skip keep-alive / partial lines */ }
+    }
+  } else {
+    const j = JSON.parse(raw);
+    html = j.choices?.[0]?.message?.content || "";
+  }
+  // Strip any markdown code fence the model wrapped the document in.
+  html = html.replace(/^[\s\S]*?```html\s*/i, "").replace(/```[\s\S]*$/i, "");
+  // Slice to the actual document (case-insensitive; tolerate a missing close).
+  const a = html.search(/<!DOCTYPE/i);
+  const bIdx = html.toLowerCase().lastIndexOf("</html>");
+  if (a >= 0) html = bIdx > a ? html.slice(a, bIdx + 7) : html.slice(a);
+  // Deterministic dash hygiene (em-dash ban is absolute, incl. HTML entities).
+  html = html
+    .replace(/\s*(?:—|&mdash;|&#8212;|&#x2014;)\s*/g, ", ")
+    .replace(/(?:–|&ndash;|&#8211;|&#x2013;)/g, "-");
   return html;
 }
 
