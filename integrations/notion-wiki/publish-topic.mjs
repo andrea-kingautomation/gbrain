@@ -36,6 +36,19 @@ const STATE_FILE = path.join(HOME, ".gbrain/integrations/notion-wiki/topic-state
 const ASSETS_STATE = path.join(HOME, ".gbrain/integrations/notion-wiki/assets-state.json");
 const NOTION_VERSION = "2022-06-28";
 const NOTION_BASE = "https://api.notion.com/v1";
+// The operator's existing "G-Brain" database (holds "Andrea's Operating
+// Principles"). All topic rows MUST live here, not in a self-created DB.
+// Override via env if the workspace ever moves it.
+const TARGET_DB_ID = process.env.NOTION_KB_DB_ID || "375eaa93-c844-8114-8fa0-ceba5a907e50";
+// treatment/template -> the DB's "Asset Type" select option.
+function assetTypeFor(topic) {
+  const t = `${topic.treatment || ""} ${topic.template || ""}`.toLowerCase();
+  if (/report|data-report/.test(t)) return "Report";
+  if (/editorial|article|longread|magazine/.test(t)) return "Guide";
+  if (/blueprint|map/.test(t)) return "Map";
+  if (/profile/.test(t)) return "Profile";
+  return "Guide";
+}
 
 const argv = process.argv.slice(2);
 const DRY = argv.includes("--dry-run");
@@ -83,41 +96,15 @@ async function isLivePage(id) {
   try { const p = await notion("GET", `/pages/${id}`); return p.object === "page" && !p.archived && !p.in_trash; }
   catch { return false; }
 }
+async function dbIsLive(id) {
+  if (!id) return false;
+  try { const d = await notion("GET", `/databases/${id}`); return d.object === "database" && !d.archived && !d.in_trash; }
+  catch { return false; }
+}
 async function ensureDb(state) {
-  if (state.dbId && await isLivePage(state.dbId)) return state.dbId;
-  state.dbId = null;
-  // co-locate under the "🧠 G-Brain" parent page, but only if it is still live (build-asset's may be trashed).
-  let parentPageId = (await isLivePage(state.parentPageId)) ? state.parentPageId
-    : (await isLivePage(loadJson(ASSETS_STATE, {}).parentPageId) ? loadJson(ASSETS_STATE, {}).parentPageId : null);
-  if (!parentPageId) {
-    const search = await notion("POST", "/search", { filter: { value: "page", property: "object" }, page_size: 50 });
-    const home = (search.results || []).find((p) => p.parent?.type === "workspace" && !p.archived && !p.in_trash)
-      || (search.results || []).find((p) => !p.archived && !p.in_trash);
-    if (!home) throw new Error("no accessible, live Notion page to host the Knowledge Base DB");
-    const parent = await notion("POST", "/pages", {
-      parent: { type: "page_id", page_id: home.id },
-      icon: { type: "emoji", emoji: "🧠" },
-      properties: { title: { title: rt("G-Brain Knowledge Base") } },
-    });
-    parentPageId = parent.id;
-  }
-  state.parentPageId = parentPageId;
-  const db = await notion("POST", "/databases", {
-    parent: { type: "page_id", page_id: parentPageId },
-    icon: { type: "emoji", emoji: "📚" },
-    title: rt("Knowledge Base"),
-    description: rt("Self-building knowledge base. Each row is a topic the brain discovered in the live corpus, distilled into a grounded, designed page. The embed IS the page. Realm routes the public Ghost site on publish; flip Visibility to Published to graduate a page from the private VPS embed to a public Ghost post."),
-    properties: {
-      Name: { title: {} },
-      Realm: { select: { options: [{ name: "KoA", color: "blue" }, { name: "Personal", color: "purple" }] } },
-      Visibility: { select: { options: [{ name: "Private", color: "gray" }, { name: "Published", color: "green" }] } },
-      "Cluster size": { number: {} },
-      Updated: { date: {} },
-      "Source URL": { url: {} },
-    },
-  });
-  state.dbId = db.id;
-  return state.dbId;
+  // Always target the operator's existing "G-Brain" database. Never create one.
+  if (await dbIsLive(TARGET_DB_ID)) { state.dbId = TARGET_DB_ID; return TARGET_DB_ID; }
+  throw new Error(`target Notion DB ${TARGET_DB_ID} is not accessible (check the integration is shared with it)`);
 }
 
 function pageBlocks(topic, url, provenance) {
@@ -139,13 +126,17 @@ async function publishTopic(topic, state) {
 
   const dbId = await ensureDb(state);
   const provenance = ""; // grounding refs are rendered in the page footer; keep the row caption short
+  const themes = (topic.tags || []).slice(0, 6).map((t) => ({ name: String(t).slice(0, 90) }));
   const props = {
     Name: { title: rt(topic.title) },
+    Summary: { rich_text: rt(`${topic.title}. Distilled by the brain from the live ${REALM_LABEL[topic.realm]} corpus. Private VPS embed (noindex); flip Visibility to graduate to a Ghost post.`) },
     Realm: { select: { name: REALM_LABEL[topic.realm] || "KoA" } },
+    Status: { select: { name: "Draft" } },
     Visibility: { select: { name: (state.topics[topic.id]?.visibility) || "Private" } },
-    "Cluster size": { number: topic.cluster_pages || null },
+    Sources: { number: topic.cluster_pages || null },
+    "Asset Type": { select: { name: assetTypeFor(topic) } },
     Updated: { date: { start: new Date().toISOString() } },
-    "Source URL": { url },
+    ...(themes.length ? { Themes: { multi_select: themes } } : {}),
   };
   const blocks = pageBlocks(topic, url, provenance);
   const existing = state.topics[topic.id]?.pageId;
