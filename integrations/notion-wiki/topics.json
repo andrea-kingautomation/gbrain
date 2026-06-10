@@ -1,0 +1,84 @@
+{
+  "_comment": "Discovered-topic registry for the self-building knowledge base. Topics are NOT hand-named; each row corresponds to a tag/entity cluster the brain formed in the live corpus (see discovery pass 2026-06-10). 'realm' drives which Ghost site a page graduates to and is decided by SUBJECT, not by source_id. 'sources' is the realm-scoped read-scope the generator queries (wall-safe). 'treatment' is the design family the brain picks per content shape via the html-anything / hallmark skills - it is a hint, not a hardcode; the generator re-confirms it from the cluster's page mix at build time.",
+  "realms": {
+    "koa": { "ghost_site": "kingofautomation.com", "sources": ["koa-conversations","koa-conversation-shards","business-synthesis","fathom-meetings","vexa-meetings"] },
+    "personal": { "ghost_site": "andrea-ercolessi.ghost.io", "sources": ["personal-synthesis","personal-conversations","personal-conversation-shards"] }
+  },
+  "_data_note": "VERIFIED 2026-06-10: all tag-bearing synthesis pages currently live in personal-synthesis (519/557 tagged); business-synthesis has 185 pages but 0 tags yet. So KoA-subject clusters are physically sourced from personal-synthesis today. Realm routing is therefore by SUBJECT (tag set), and any KoA page drawn from personal-synthesis must be operator-reviewed before going outward, because it originates in the ACL-walled source. This resolves once business-synthesis carries its own tagged corpus.",
+  "topics": [
+    {
+      "id": "koa-ai-routing",
+      "title": "AI Routing & Model Intelligence",
+      "realm": "koa",
+      "tags": ["routing","ai-routing","model-routing","smart-router","omniroute","router","bifrost"],
+      "source_override": ["personal-synthesis"],
+      "treatment": "system-blueprint",
+      "template": "deck-blueprint",
+      "preview": "/home/claude/outputs/gbrain-preview-koa-ai-routing.html",
+      "status": "preview-rendered",
+      "cluster_pages": 148
+    },
+    {
+      "id": "koa-agentic-os",
+      "title": "The Agentic OS",
+      "realm": "koa",
+      "tags": ["openclaw","agentic-os","agents","agent-chakra","delegation","agent-ops"],
+      "source_override": ["personal-synthesis"],
+      "treatment": "system-map",
+      "template": "deck-graphify-dark",
+      "status": "discovered"
+    },
+    {
+      "id": "koa-infrastructure",
+      "title": "Infrastructure & Reliability",
+      "realm": "koa",
+      "tags": ["infrastructure","reliability","operations","observability","ai-infrastructure","ai-operations"],
+      "source_override": ["personal-synthesis"],
+      "treatment": "system-map",
+      "template": "deck-blueprint",
+      "status": "discovered"
+    },
+    {
+      "id": "koa-knowledge-brain",
+      "title": "The Knowledge Brain",
+      "realm": "koa",
+      "tags": ["gbrain","provenance","multimodal"],
+      "source_override": ["personal-synthesis"],
+      "treatment": "system-map",
+      "template": "deck-graphify-dark",
+      "status": "discovered"
+    },
+    {
+      "id": "koa-trust-verification",
+      "title": "Trust & Verification in AI",
+      "realm": "koa",
+      "tags": ["trust","verification","debugging"],
+      "source_override": ["personal-synthesis"],
+      "treatment": "report",
+      "template": "data-report",
+      "status": "discovered"
+    },
+    {
+      "id": "personal-mental-models",
+      "title": "Mental Models & Self-Knowledge",
+      "realm": "personal",
+      "tags": ["self-knowledge","mental-model","reflection"],
+      "treatment": "editorial-longread",
+      "template": "web-proto-editorial",
+      "preview": "/home/claude/outputs/gbrain-preview-personal-mental-models.html",
+      "status": "preview-rendered",
+      "cluster_pages": 244,
+      "subject_exclude_tags": ["routing","infrastructure","openclaw","gbrain"],
+      "_exclude_note": "personal-synthesis mixes the founder's self-reflection with KoA-subject conclusions; exclude pure-infra tags so this personal page does not duplicate the KoA pages (coherence + realm-split gate)."
+    },
+    {
+      "id": "personal-original-ideas",
+      "title": "Original Ideas",
+      "realm": "personal",
+      "tags": ["original","original-idea","pattern"],
+      "treatment": "editorial-longread",
+      "template": "article-magazine",
+      "status": "discovered"
+    }
+  ]
+}
