@@ -127,21 +127,40 @@ const WRITING_STANDARD = `WRITING STANDARD (non-negotiable — the page must rea
 - Honest copy: every claim traces to a source page below. Preserve verbatim quotes exactly and attribute them to their provenance ref so a reader can verify. Invent nothing.
 - Before you emit, read the draft once as the reader would and cut any sentence that sounds like an AI template.`;
 
-const DESIGN_BRIEF = (brief) => `You are the distillation + design pass of a self-building knowledge base. You turn a grounded research brief into ONE finished, publishable web page.
+const DESIGN_BRIEF = (brief, templateSpec) => `You are the distillation + design pass of a self-building knowledge base. You turn a grounded research brief into ONE finished, visually designed, publishable web page.
 
 ${WRITING_STANDARD}
 
-DESIGN:
-Render ONE self-contained HTML page (all CSS inline, no external deps; it must render inside a Notion embed iframe AND as an offline file). Add <meta name="robots" content="noindex,nofollow">.
-- TOPIC: ${brief.title} (publishing realm: ${brief.realm})
-- TREATMENT: ${brief.treatment}. Follow the html-anything template "${brief.template}" as a starting structure, then apply the hallmark disciplines: structural variety (this page must NOT share the hero -> 3-card -> CTA rhythm of a generic template; let the content's actual shape drive the layout), locked design tokens (every colour/font as a named CSS variable, no inline hex mid-render), a pre-emit critique comment stamp, and mobile-responsiveness verified at 320/375/414/768px (no horizontal scroll).
-- The design must fit THIS topic's shape. A blueprint of a system reads differently from a set of personal reflections; do not reuse one rhythm for the other.
-- Surface the provenance (the source titles / turn-refs) somewhere on the page so the grounding is visible and verifiable.
+DESIGN (this is a designed page, not a text document — make it look intentionally art-directed):
+Render ONE self-contained HTML page (all CSS inline, no external deps, no CDN; it must render inside a Notion embed iframe AND as an offline file). Add <meta name="robots" content="noindex,nofollow">.
+- TOPIC: ${brief.title} (publishing realm: ${brief.realm}) | TREATMENT: ${brief.treatment}
+- Follow the html-anything template spec below as your design system (palette, type, layout motifs). Implement its aesthetic faithfully in inline CSS. Translate any non-English design notes into concrete CSS.
+${templateSpec ? `--- TEMPLATE SPEC: ${brief.template} ---\n${templateSpec}\n--- END TEMPLATE SPEC ---` : `(template "${brief.template}" spec unavailable; design a polished page in that style from first principles)`}
+- VISUAL RICHNESS: do not settle for stacked text columns. Use the full design vocabulary the content supports: a real type scale and hierarchy, a committed colour palette as named CSS variables, generous whitespace, section dividers, pull-quotes, numbered markers, cards with depth, tables for tabular data, and inline SVG diagrams where a relationship or pipeline is described (e.g. a layered routing stack, a flow, a comparison). Hand-draw the SVG; never invent data the sources do not contain.
+- Apply the hallmark disciplines: structural variety (this page must NOT fall into a generic hero -> 3-card -> CTA rhythm; let the content's actual shape drive the layout), locked design tokens (every colour/font as a named CSS variable, no raw hex mid-render), a pre-emit critique comment stamp at the top, and mobile-responsiveness at 320/375/414/768px (no horizontal scroll, diagrams reflow or scale).
+- The design must fit THIS topic. A system blueprint reads differently from personal reflections; do not reuse one rhythm for the other.
+- Surface the provenance (source titles / turn-refs) in a styled footer or aside so the grounding is visible and verifiable.
 
 SOURCE PAGES (the ONLY material you may draw from — grounded corpus for this topic):
 ${brief.pages.map((p, i) => `[${i + 1}] ${p.title} (${p.date})\n${p.body.slice(0, 1400)}\nprovenance: ${p.provenance.join(", ") || "n/a"}`).join("\n\n")}
 
 Output ONLY the HTML document, nothing else.`;
+
+// Fetch the html-anything template's design spec (palette/type/layout) so the model
+// designs to the real template, not an improvised plain layout. Cached in /tmp.
+async function fetchTemplateSpec(template) {
+  if (!template) return null;
+  const cache = path.join(os.tmpdir(), `ha-tmpl-${template}.md`);
+  try { return fs.readFileSync(cache, "utf8"); } catch { /* miss */ }
+  const url = `https://raw.githubusercontent.com/nexu-io/html-anything/main/next/src/lib/templates/skills/${template}/SKILL.md`;
+  try {
+    const r = await fetch(url);
+    if (!r.ok) return null;
+    const spec = (await r.text()).slice(0, 4000);
+    try { fs.writeFileSync(cache, spec); } catch { /* best-effort */ }
+    return spec;
+  } catch { return null; }
+}
 
 async function render(brief) {
   const key = (() => {
@@ -156,7 +175,7 @@ async function render(brief) {
     headers: { "Content-Type": "application/json", Authorization: `Bearer ${key}` },
     body: JSON.stringify({
       model: OMNI_MODEL,
-      messages: [{ role: "user", content: DESIGN_BRIEF(brief) }],
+      messages: [{ role: "user", content: DESIGN_BRIEF(brief, await fetchTemplateSpec(brief.template)) }],
       temperature: 0.5,
       stream: false,
       max_tokens: 16000,
