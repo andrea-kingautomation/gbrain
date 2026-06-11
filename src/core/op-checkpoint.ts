@@ -127,7 +127,7 @@ export async function loadOpCheckpoint(
          WHERE op = $1 AND fingerprint = $2
        UNION ALL
        SELECT jsonb_array_elements_text(completed_keys) AS ckey FROM op_checkpoints
-         WHERE op = $1 AND fingerprint = $2`,
+         WHERE op = $1 AND fingerprint = $2 AND jsonb_typeof(completed_keys) = 'array'`,
       [key.op, key.fingerprint],
     );
     const set = new Set<string>();
@@ -157,19 +157,25 @@ export async function recordCompleted(
   // REPLACE semantics (kept deliberately — #1794 V3). Callers like
   // extract-conversation-facts serialize a MUTABLE map through here and rely on
   // stale keys being REMOVED; an append would make them unremovable. The full
-  // set lands in the parent `completed_keys` JSONB column via a single UPSERT —
-  // exactly as before. JSON.stringify into `$3::jsonb` is correct (the text→jsonb
-  // cast yields a proper array; NOT the double-encode trap, which is the template
-  // form). Sync uses `appendCompleted` (below) instead, never this.
+  // set lands in the parent `completed_keys` JSONB column via a single UPSERT.
+  // FIX (2026-06-11): the prior `$3::jsonb` + `JSON.stringify(sorted)` form
+  // DOUBLE-ENCODED under postgres-js — it stored a JSONB *string* scalar
+  // (jsonb_typeof='string') instead of an array, so loadOpCheckpoint's
+  // jsonb_array_elements_text threw "cannot extract elements from a scalar" and
+  // silently returned []. (The old comment claimed it was correct; empirically
+  // wrong — see postgres-engine.ts:1285 for the documented trap.) Bind a JS
+  // string[] to a Postgres text[] and convert server-side via to_jsonb($3::text[])
+  // — the same native-array path APPEND_PATHS_SQL uses; round-trip verified to
+  // produce jsonb_typeof='array'.
   const sorted = [...keys].sort();
   return durableWrite(engine, key, 'write', () =>
     engine.executeRawDirect(
       `INSERT INTO op_checkpoints (op, fingerprint, completed_keys, updated_at)
-       VALUES ($1, $2, $3::jsonb, now())
+       VALUES ($1, $2, to_jsonb($3::text[]), now())
        ON CONFLICT (op, fingerprint) DO UPDATE
          SET completed_keys = EXCLUDED.completed_keys,
              updated_at     = now()`,
-      [key.op, key.fingerprint, JSON.stringify(sorted)],
+      [key.op, key.fingerprint, sorted],
     ));
 }
 
