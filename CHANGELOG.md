@@ -2,6 +2,20 @@
 
 All notable changes to GBrain will be documented in this file.
 
+## [0.42.39.0] - 2026-06-11
+
+**Genuine multi-turn conversations were being silently dropped by the parser's acceptance floor whenever their message bodies were long.** Measured on the live KoA corpus: 21% of `koa-conversations` pages and 50% of `personal-conversations` pages returned `no_match` and produced zero facts — not because their format was unrecognized, but because the 0.05 ratio floor (matched-anchor-lines / non-blank-lines) is defeated by the way seat-export topics look. A founder planning topic with ~40 timestamped `**[2026-06-07 16:22:50] andrea** (user):` turns spread across 2,100 lines of plan-mode dumps, repeated `{"action":...}` blobs, and pasted logs scores ~0.019 — well below the floor — yet is unmistakably a transcript.
+
+The floor's real target is a *single* stray anchor in prose, which is an absolute count of one, not a ratio. So the floor now has an absolute-anchor escape: when a precise (timestamped, non-`score_full_body`) pattern anchors at least `SCORING_MIN_ABS_ANCHORS` (2) whole lines, the page is accepted even though its ratio is sub-floor. Two full `**[ISO datetime] speaker** (role):` lines never occur in non-conversational prose, so the escape recovers real two-turn exchanges (a long inbound-lead question plus one long reply) without re-opening the false-positive the floor was built to close. Broad no-time prose matchers (`bold-name-no-time`) are explicitly excluded — they can hit a handful of coincidental `**Label:**` lines in real prose, so they keep the strict ratio-only floor.
+
+Crucially the escape does not defer to the ratio winner. In a very long document a broad bold-label matcher can outscore a precise pattern on ratio (agent replies are full of markdown `**Label:**` lines) and bury a real timestamped transcript — observed on a 294 KB BD topic carrying five `koa-telegram-seat` turns. The escape therefore scans every candidate for the precise pattern with the most anchored lines and parses with that one. This only ever loosens acceptance, so no previously-matched page can regress: across the live corpus `no_match` fell from 14.6% to 4.9% (koa 21.1%→6.4%, personal 50%→25%), recovering 18 conversations, while the already-matched pattern counts were unchanged. The pages left as `no_match` are single-message machine output (boot/heartbeat JSON), which is correct.
+
+### Fixed
+- **Long-bodied conversations no longer dropped by the parse acceptance floor (KoA ingestion-quality).** Added `SCORING_MIN_ABS_ANCHORS` absolute-anchor escape in `parseConversation`: a precise timestamped pattern anchoring >= 2 whole lines is accepted even below the 0.05 ratio floor, and the escape picks the best precise pattern by absolute count rather than the ratio winner so a broad prose matcher can't bury it. Three regression tests pin recovery, the broad-matcher-buries-precise case, and the single-stray-anchor safety case. No-op for already-matched pages.
+
+### To take advantage of v0.42.39.0
+Re-run fact extraction over conversation sources whose pages were previously skipped — `gbrain extract-conversation-facts --source-id <id>`. Previously `no_match` pages were never checkpointed (only successful extractions advance the op-checkpoint), so a normal re-walk re-visits and extracts them while already-done pages no-op.
+
 ## [0.42.38.0] - 2026-06-09
 
 **Three independent job-layer bugs that left autopilot wedged or swallowed a command's output are fixed, each traced to source.** A triage of the job/lock/teardown layer (gbrain#1972) pulled them into one wave.

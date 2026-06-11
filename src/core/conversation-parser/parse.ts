@@ -76,6 +76,28 @@ const SCORING_HEAD_TRIGGER_THRESHOLD = 0.3;
 const SCORING_MIN_ACCEPTANCE = 0.05;
 
 /**
+ * Absolute-anchor escape from the ratio floor (v0.42.39.0, KoA).
+ *
+ * The 0.05 ratio floor is defeated by GENUINE multi-turn conversations
+ * whose message BODIES are very long: KoA/OpenClaw seat-export topics
+ * routinely carry plan-mode dumps, repeated `{"action":...}` blobs, and
+ * pasted logs between speaker turns. A founder topic with ~40 timestamped
+ * `**[2026-06-07 16:22:50] andrea** (user):` turns over 2100 lines scores
+ * ~0.019 — below the floor — yet is unambiguously a transcript (measured:
+ * 21% of koa-conversations + 50% of personal-conversations pages were
+ * dropped this way). The floor's REAL target is a single stray anchor in
+ * prose, which is an ABSOLUTE count of 1, not a ratio.
+ *
+ * So when the winner is a PRECISE pattern (timestamped; NOT a broad
+ * `score_full_body` prose matcher like bold-name-no-time) we also accept on
+ * absolute anchor count: 2+ full `**[ISO datetime] speaker** (role):` lines
+ * never occur in non-conversational prose, so 2 is a safe minimum and still
+ * recovers real 2-turn exchanges (e.g. a long inbound-lead question + one
+ * long reply). Broad no-time matchers keep the strict ratio-only floor.
+ */
+const SCORING_MIN_ABS_ANCHORS = 2;
+
+/**
  * Tie-breaker priority: lower index wins on score tie. Mirrors
  * BUILTIN_PATTERNS declaration order. User-declared patterns get
  * priority Infinity (lose every tie).
@@ -383,17 +405,24 @@ function getNonBlankLines(body: string, headCap?: number): string[] {
  * passes the array to all 12 candidates (saves 11 redundant body
  * splits per fallback pass).
  */
-function scoreFromLines(
+function countAnchoredLines(
   lines: readonly string[],
   entry: PatternEntry,
 ): number {
-  if (lines.length === 0) return 0;
   let anchored = 0;
   for (const line of lines) {
     if (entry.quick_reject && !entry.quick_reject.test(line)) continue;
     if (entry.regex.test(line)) anchored++;
   }
-  return anchored / lines.length;
+  return anchored;
+}
+
+function scoreFromLines(
+  lines: readonly string[],
+  entry: PatternEntry,
+): number {
+  if (lines.length === 0) return 0;
+  return countAnchoredLines(lines, entry) / lines.length;
 }
 
 /**
@@ -497,6 +526,10 @@ export function parseConversation(
 
   const top = scored[0];
   const patternsScored = scored.length;
+  // The pattern actually used to segment. Normally the ratio winner; the
+  // absolute-anchor escape below may re-point it to a precise pattern that
+  // the ratio winner buried (see the floor block).
+  let winnerEntry: PatternEntry = top.entry;
 
   // v0.41.29.0 (Codex F1): broad no-time patterns (`bold-name-no-time`,
   // regex matches any `**Label:** text`) can win the HEAD pass on a
@@ -518,33 +551,65 @@ export function parseConversation(
   // below the 5% floor we stay no_match instead of returning a
   // 1-message false positive. Real transcript pages typically score
   // 0.5+ and sail through.
+  //
+  // v0.42.39.0 (KoA) absolute-anchor escape: a precise (timestamped, non
+  // score_full_body) pattern that anchors SCORING_MIN_ABS_ANCHORS+ whole
+  // lines is a genuine multi-turn conversation even when long message bodies
+  // dilute the ratio below 0.05. See SCORING_MIN_ABS_ANCHORS.
+  //
+  // Crucially we do NOT judge by the ratio winner (top.entry). A broad prose
+  // matcher (bold-name-no-time) can outscore a precise pattern on RATIO in a
+  // huge document — agent replies are full of markdown `**Label:**` lines —
+  // burying a real timestamped transcript (measured on a 294 KB BD topic with
+  // 5 koa-telegram-seat turns). So scan all candidates for the precise pattern
+  // with the MOST anchored lines and parse with that one when it clears the
+  // bar. Broad no-time matchers never qualify (a few coincidental bold labels
+  // in prose must stay no_match).
   if (top.score < SCORING_MIN_ACCEPTANCE) {
-    return {
-      messages: [],
-      phase: 'no_match',
-      patterns_scored: patternsScored,
-      unmatched_line_count: opts.diagnostic
-        ? body.split(/\r?\n/).filter((l) => l.trim().length > 0).length
-        : undefined,
-    };
+    const allLines = getNonBlankLines(body);
+    let bestPrecise: { entry: PatternEntry; anchors: number; priority: number } | null = null;
+    for (const entry of candidates) {
+      if (entry.score_full_body) continue;
+      const anchors = countAnchoredLines(allLines, entry);
+      if (anchors === 0) continue;
+      const priority = priorityOf(entry.id);
+      if (
+        !bestPrecise ||
+        anchors > bestPrecise.anchors ||
+        (anchors === bestPrecise.anchors && priority < bestPrecise.priority)
+      ) {
+        bestPrecise = { entry, anchors, priority };
+      }
+    }
+    if (!bestPrecise || bestPrecise.anchors < SCORING_MIN_ABS_ANCHORS) {
+      return {
+        messages: [],
+        phase: 'no_match',
+        patterns_scored: patternsScored,
+        unmatched_line_count: opts.diagnostic
+          ? body.split(/\r?\n/).filter((l) => l.trim().length > 0).length
+          : undefined,
+      };
+    }
+    winnerEntry = bestPrecise.entry;
   }
 
-  const messages = applyPattern(body, top.entry, dateCtx);
+  const messages = applyPattern(body, winnerEntry, dateCtx);
 
   // Timezone warning surface (D19).
   let timezone_warning: string | undefined;
   if (
-    top.entry.timezone_policy === 'utc_assumed_with_warn' &&
+    winnerEntry.timezone_policy === 'utc_assumed_with_warn' &&
     !dateCtx.timezone &&
     messages.length > 0
   ) {
-    timezone_warning = `[conversation-parser] pattern=${top.entry.id} assumed UTC for time-only timestamps; add 'timezone: <IANA>' to page frontmatter for accurate facts`;
+    timezone_warning = `[conversation-parser] pattern=${winnerEntry.id} assumed UTC for time-only timestamps; add 'timezone: <IANA>' to page frontmatter for accurate facts`;
   }
 
   return {
     messages,
     phase: 'regex_match',
-    matched_pattern_id: top.entry.id,
+    matched_pattern_id: winnerEntry.id,
     patterns_scored: patternsScored,
     timezone_warning,
     unmatched_line_count: opts.diagnostic

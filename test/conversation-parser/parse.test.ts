@@ -646,6 +646,75 @@ describe('parseConversation — full-body fallback', () => {
     expect(r.messages).toHaveLength(0);
   });
 
+  // ----- v0.42.39.0 (KoA): absolute-anchor escape from the ratio floor -----
+  // KoA/OpenClaw seat-export topics carry very long message bodies (plan-mode
+  // dumps, repeated `{"action":...}` blobs, pasted logs) between speaker
+  // turns, so a genuine multi-turn transcript scores far below the 0.05 ratio
+  // floor. Measured: 21% of koa-conversations + 50% of personal-conversations
+  // pages were silently dropped this way. A precise (timestamped) pattern that
+  // anchors >= SCORING_MIN_ABS_ANCHORS whole lines now recovers them.
+
+  test('KoA escape: 3-turn seat transcript with huge bodies recovers despite sub-floor ratio', () => {
+    const filler = Array.from(
+      { length: 200 },
+      (_, i) => `ordinary body line ${i} with details about the plan and the rollout`,
+    );
+    const body = [
+      '# Topic 8253 — Founder Seat',
+      '',
+      '## Conversation',
+      '',
+      '**[2026-06-07 16:22:50] andrea** (user):',
+      'think hard about the roadmap',
+      ...filler,
+      '**[2026-06-07 16:40:10] koa_founder_bot** (assistant):',
+      'here is the plan',
+      ...filler,
+      '**[2026-06-07 17:01:00] andrea** (user):',
+      'looks good, ship it',
+      ...filler,
+    ].join('\n');
+    // 3 anchors / ~609 non-blank lines ≈ 0.005 — far below the 0.05 floor.
+    const r = parseConversation(body, { fallbackDate: '2026-06-07' });
+    expect(r.phase).toBe('regex_match');
+    expect(r.matched_pattern_id).toBe('koa-telegram-seat');
+    expect(r.messages).toHaveLength(3);
+  });
+
+  test('KoA escape: precise pattern wins the escape even when a broad bold-label matcher outscores it on ratio', () => {
+    // The 294 KB BD-topic regression: a handful of markdown `**Label:**` lines
+    // in the agent replies give bold-name-no-time a HIGHER (still sub-floor)
+    // ratio than the 2 koa-telegram-seat turns, so it is the ratio winner. The
+    // escape must judge precise patterns by ABSOLUTE anchor count, not defer to
+    // the ratio winner (a score_full_body broad matcher never qualifies).
+    const filler = Array.from(
+      { length: 200 },
+      (_, i) => `ordinary body line ${i} describing the lead and the proposed scope`,
+    );
+    const bold = ['**Scope:** outbound AI agent', '**Budget:** TBD', '**Next:** draft reply', '**Risk:** timeline'];
+    const body = [
+      '**[2026-05-05 10:17:29] andrea** (user):',
+      'new inbound lead from fiverr',
+      ...bold,
+      ...filler,
+      '**[2026-05-05 10:40:02] koa_bd_bot** (assistant):',
+      'here is the draft',
+      ...filler,
+    ].join('\n');
+    const r = parseConversation(body, { fallbackDate: '2026-05-05' });
+    expect(r.phase).toBe('regex_match');
+    expect(r.matched_pattern_id).toBe('koa-telegram-seat');
+    expect(r.messages).toHaveLength(2);
+  });
+
+  test('KoA escape: a single stray seat anchor in prose stays no_match (below the absolute floor)', () => {
+    const prose = Array.from({ length: 200 }, (_, i) => `ordinary prose sentence number ${i}.`);
+    const body = ['**[2026-06-07 16:22:50] andrea** (user):', 'one line', ...prose].join('\n');
+    const r = parseConversation(body, { fallbackDate: '2026-06-07' });
+    expect(r.phase).toBe('no_match');
+    expect(r.messages).toHaveLength(0);
+  });
+
   // T3 #4: proves "full-body" not just "wider window" — 300-line preamble
   // far exceeds any reasonable head-bump alternative.
   test('300-line preamble + 50 chat lines hits fallback (any preamble length)', () => {
