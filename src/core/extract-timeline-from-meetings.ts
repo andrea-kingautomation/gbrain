@@ -113,7 +113,7 @@ export async function extractTimelineFromMeetings(
       try {
         entriesCreated += await engine.addTimelineEntriesBatch(batch);
       } catch (e) {
-        console.error('FLUSH ERR:', e && (e.message||e));
+        console.error('FLUSH ERR:', e && ((e as any).message||e));
       }
     } else {
       entriesCreated += batch.length;

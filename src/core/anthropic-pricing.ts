@@ -1,60 +1,58 @@
 /**
- * v0.28: Anthropic model pricing constants for the dream-cycle budget meter.
+ * Anthropic chat pricing — a bare-keyed VIEW of the canonical pricing table
+ * (`src/core/model-pricing.ts`).
  *
- * Prices in USD per 1M tokens (input | output). Numbers reflect Anthropic's
- * published pricing as of 2026-05-01. Update when Anthropic publishes new
- * pricing — the JSON in `~/.gbrain/audit/dream-budget-*.jsonl` carries the
- * snapshot per call so historical estimates stay reproducible.
+ * Kept as a distinct export because many callers look up by bare Claude id
+ * (`claude-opus-4-7`) and because `estimateMaxCostUsd` carries the
+ * null-on-miss contract the dream-cycle budget gate depends on. The dollar
+ * numbers live in model-pricing.ts — DO NOT hand-edit prices here; this map is
+ * derived from the `anthropic:` canonical entries (prefix stripped), so it
+ * cannot drift from the other pricing views. (Pre-unification this map and
+ * takes-quality-eval/pricing.ts duplicated the numbers and drifted: Opus 4.7
+ * read $15/$75 in one and $5/$25 in the other.)
  *
- * Codex P1 #10 fold: non-Anthropic models (gemini, gpt, anything not in
- * this map) bypass the budget gate with a `BUDGET_METER_NO_PRICING` warn
- * once per process. The cycle still runs unbounded for those models.
- * Future: per-provider pricing modules.
+ * Codex P1 #10 fold: non-Anthropic models (gemini, gpt, anything not in this
+ * map) bypass the budget gate with a `BUDGET_METER_NO_PRICING` warn once per
+ * process. The cycle still runs unbounded for those models.
  */
 
-export interface ModelPricing {
-  /** USD per 1M input tokens. */
-  input: number;
-  /** USD per 1M output tokens. */
-  output: number;
-}
-
-/** Map of Anthropic model id → pricing. Aliases (opus/sonnet/haiku) resolve via DEFAULT_ALIASES. */
-export const ANTHROPIC_PRICING: Record<string, ModelPricing> = {
-  // Claude 4.7 generation (current)
-  // Opus 4.7 dropped from $15/$75 (Opus 4) to $5/$25 per
-  // https://platform.claude.com/docs/en/about-claude/models/overview (verified 2026-05-10).
-  'claude-opus-4-7':            { input:  5.00, output: 25.00 },
-  'claude-sonnet-4-6':          { input:  3.00, output: 15.00 },
-  'claude-haiku-4-5-20251001':  { input:  1.00, output:  5.00 },
-  // Older but still frequently aliased
-  'claude-opus-4-6':            { input:  5.00, output: 25.00 },
-  'claude-3-5-sonnet-20241022': { input:  3.00, output: 15.00 },
-  'claude-3-5-haiku-20241022':  { input:  0.80, output:  4.00 },
-  // KoA omniroute virtual models (route via local omniroute :20128). Priced so
-  // the BudgetTracker can enforce --max-cost; koa-claude-synth -> sonnet-class,
-  // koa-default -> adaptive (conservative mid estimate). Added 2026-06-04.
-  'koa-claude-synth':           { input:  3.00, output: 15.00 },
-  'koa-default':                { input:  1.50, output:  7.50 },
-  // koa-gbrain -> free-first combo (gemini free -> claude-haiku -> ce/gpt-5.4-mini).
-  // Low estimate reflects free/cheap lead; budget meter stays conservative. Added 2026-06-05.
-  'koa-gbrain':                 { input:  0.30, output:  1.20 },
-  // koa-gbrain-reasoning -> ce/claude-sonnet (Codex Everywhere @ ~6% of official price) lead -> ce/gpt-5.4-mini (@3%) -> free gemini insurance.
-  // Priced at the CE discount (6% of sonnet's 3.00/15.00) so the budget meter reflects real spend.
-  'koa-gbrain-reasoning':       { input:  0.18, output:  0.90 },
-  // cos OmniRoute taxonomy combos (combos.koa.json). Estimates reflect each combo's
-  // lead model so the budget meter works; actual cost is lower when free tiers serve. 2026-06-05.
-  'koa-floor':                  { input:  0.20, output:  0.80 },
-  'koa-fast':                   { input:  0.20, output:  0.80 },
-  'koa-judge':                  { input:  0.20, output:  0.80 },
-  'koa-smart':                  { input:  0.40, output:  1.60 },
-  'koa-code':                   { input:  1.00, output:  4.00 },
-  'koa-claude-haiku-resilient': { input:  0.80, output:  4.00 },
-  'koa-claude-sonnet-resilient':{ input:  3.00, output: 15.00 },
-  'koa-claude-opus-resilient':  { input:  5.00, output: 25.00 },
-};
-
+import { CANONICAL_PRICING, type ModelPricing } from './model-pricing.ts';
 import { splitProviderModelId } from './model-id.ts';
+
+export type { ModelPricing };
+
+/**
+ * Bare-keyed Anthropic view, derived from the canonical table. Both the
+ * dateless ids (`claude-haiku-4-5`, used by aliases / TIER_DEFAULTS / most
+ * callers) and the dated snapshots (`claude-haiku-4-5-20251001`) are present
+ * because canonical carries both.
+ */
+export const ANTHROPIC_PRICING: Record<string, ModelPricing> = {
+  // Canonical paid-cloud Anthropic entries, derived from model-pricing.ts (the
+  // drift guard pins these to canonical — do NOT hand-edit these numbers).
+  ...Object.fromEntries(
+    Object.entries(CANONICAL_PRICING)
+      .filter(([key]) => key.startsWith('anthropic:'))
+      .map(([key, pricing]) => [key.slice('anthropic:'.length), pricing]),
+  ),
+  // KoA OmniRoute VIRTUAL combos (route via local omniroute :20128). Not in the
+  // canonical paid-cloud table (router combos, not provider models); priced at
+  // their lead model so BudgetTracker can enforce --max-cost on the gbrain cycle.
+  // Re-applied after the 2026-06-11 upstream merge (the canonical refactor dropped
+  // these; the drift guard only asserts canonical keys are PRESENT, not exclusive).
+  'koa-claude-synth':            { input: 3.00, output: 15.00 },
+  'koa-default':                 { input: 1.50, output:  7.50 },
+  'koa-gbrain':                  { input: 0.30, output:  1.20 },
+  'koa-gbrain-reasoning':        { input: 0.18, output:  0.90 },
+  'koa-floor':                   { input: 0.20, output:  0.80 },
+  'koa-fast':                    { input: 0.20, output:  0.80 },
+  'koa-judge':                   { input: 0.20, output:  0.80 },
+  'koa-smart':                   { input: 0.40, output:  1.60 },
+  'koa-code':                    { input: 1.00, output:  4.00 },
+  'koa-claude-haiku-resilient':  { input: 0.80, output:  4.00 },
+  'koa-claude-sonnet-resilient': { input: 3.00, output: 15.00 },
+  'koa-claude-opus-resilient':   { input: 5.00, output: 25.00 },
+};
 
 /**
  * Estimate the upper-bound USD cost of a single submit.
