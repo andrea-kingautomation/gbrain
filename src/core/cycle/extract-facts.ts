@@ -43,6 +43,18 @@ import {
 } from './phantom-redirect.ts';
 import { embed, isAvailable } from '../ai/gateway.ts';
 import { isAborted } from '../abort-check.ts';
+import { ALLOWED_TYPES } from '../../commands/extract-conversation-facts.ts';
+
+/**
+ * Page types whose facts are OWNED by the conversation_facts_backfill
+ * subsystem (extracted from the transcript body, not a `## Facts` fence).
+ * The fence-reconcile loop below MUST NOT touch these: a transcript has no
+ * fence, so deleteFactsForPage would wipe every fact the backfill inserted.
+ * Before this guard the two phases silently fought every cycle tick, pinning
+ * conversation/meeting facts at ~0 (one tick observed deleting 2108 facts).
+ * Single source of truth: ALLOWED_TYPES from extract-conversation-facts.ts.
+ */
+const CONVERSATION_FACT_TYPES = new Set<string>(ALLOWED_TYPES);
 
 export interface ExtractFactsOpts {
   /** Subset of slugs to reconcile. undefined = walk every page in the brain. */
@@ -207,6 +219,14 @@ export async function runExtractFacts(
     if (!page) {
       // Slug listed but not in DB — skip silently. The next cycle
       // will pick it up if it exists.
+      continue;
+    }
+
+    // Never fence-reconcile conversation-fact source types. Their facts are
+    // owned by conversation_facts_backfill (extracted from the body, no
+    // `## Facts` fence). Reconciling here = deleteFactsForPage on a fence-less
+    // transcript = wiping the backfill's facts. Skip before any delete.
+    if (page.type && CONVERSATION_FACT_TYPES.has(page.type)) {
       continue;
     }
 
