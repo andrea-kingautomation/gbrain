@@ -395,6 +395,63 @@ export function renderSegmentForExtraction(
   return `${header}\n${body.slice(0, Math.max(0, slack))}\n…(truncated)`;
 }
 
+/**
+ * Split a segment into one OR MORE rendered chunks, each ≤ SEGMENT_TEXT_CHAR_LIMIT
+ * (and therefore under extract.ts's MAX_TURN_TEXT_CHARS=8000 with header headroom).
+ *
+ * KoA fix 2026-06-12: renderSegmentForExtraction TRUNCATES bodies over the limit,
+ * which silently discarded most of every dense conversation — KoA's agent turns are
+ * often thousands of chars each, so a long-form topic page (e.g. a 1MB topic) yielded
+ * only a handful of facts because the extractor never saw past the first ~6.5k chars
+ * of each segment. Chunking sends the WHOLE segment through the extractor across
+ * successive calls instead of dropping the tail. A single message larger than the
+ * budget is hard-split into continuation pieces so nothing is lost. The header
+ * (page title + participants + time range) is repeated on every chunk so each call
+ * keeps its topical/attribution anchor. renderSegmentForExtraction is retained for
+ * back-compat (eval/tests); production now calls this.
+ */
+export function renderSegmentChunks(
+  pageTitle: string,
+  segment: ConversationSegment,
+): string[] {
+  const header = [
+    `Page: ${pageTitle}`,
+    `Conversation between ${segment.participants.join(' and ')} from ${segment.startIso} to ${segment.endIso}`,
+    '---',
+  ].join('\n');
+  // Reserve room for the header (repeated per chunk) + the continuation marker.
+  const budget = Math.max(800, SEGMENT_TEXT_CHAR_LIMIT - header.length - 16);
+  const lines = segment.messages.map((m) => `${m.speaker} (${m.timestamp}): ${m.text}`);
+  // Expand any single line longer than the budget into budget-sized pieces so an
+  // oversized turn is split rather than truncated; the marker preserves continuity.
+  const pieces: string[] = [];
+  for (const line of lines) {
+    if (line.length <= budget) {
+      pieces.push(line);
+      continue;
+    }
+    const partBudget = Math.max(400, budget - 12);
+    for (let i = 0; i < line.length; i += partBudget) {
+      const part = line.slice(i, i + partBudget);
+      pieces.push(i === 0 ? part : `…(cont) ${part}`);
+    }
+  }
+  // Greedily pack pieces into chunks that each stay under budget.
+  const chunks: string[] = [];
+  let cur = '';
+  for (const p of pieces) {
+    const add = cur ? `\n${p}` : p;
+    if (cur && cur.length + add.length > budget) {
+      chunks.push(`${header}\n${cur}`);
+      cur = p;
+    } else {
+      cur += add;
+    }
+  }
+  if (cur) chunks.push(`${header}\n${cur}`);
+  return chunks.length > 0 ? chunks : [header];
+}
+
 // ---------------------------------------------------------------------------
 // Fingerprint — sourceId-only (Eng-v2 A3). Widening types config does NOT
 // invalidate prior completion state.
@@ -735,72 +792,78 @@ async function processPage(
     if (state.segmentLimit > 0 && segmentsThisPage >= state.segmentLimit) break;
     if (state.signal?.aborted) throw new Error('aborted');
 
-    const text = renderSegmentForExtraction(page.title || page.slug, seg);
+    // KoA fix 2026-06-12: render the WHOLE segment as one or more ≤limit chunks
+    // (was a single truncated render that silently dropped long-form agent turns).
+    // Each chunk is a separate extractor call; facts accumulate across chunks.
+    const chunks = renderSegmentChunks(page.title || page.slug, seg);
     const sessionId = `${PER_SEGMENT_SOURCE_PREFIX}:${page.slug}`;
 
-    let extracted: Awaited<ReturnType<typeof extractFactsFromTurn>> = [];
-    try {
-      extracted = await extractFactsFromTurn({
-        turnText: text,
-        sessionId,
-        source: PER_SEGMENT_SOURCE_PREFIX,
-        engine: state.engine,
-        abortSignal: state.signal,
-        onCallError: (info) => {
-          pageHadCallError = true;
+    for (const text of chunks) {
+      let extracted: Awaited<ReturnType<typeof extractFactsFromTurn>> = [];
+      try {
+        extracted = await extractFactsFromTurn({
+          turnText: text,
+          sessionId,
+          source: PER_SEGMENT_SOURCE_PREFIX,
+          engine: state.engine,
+          abortSignal: state.signal,
+          onCallError: (info) => {
+            pageHadCallError = true;
+            process.stderr.write(
+              `[extract-conversation-facts] ${page.slug} segment ${seg.startIso}..${seg.endIso} chat call failed (${info.reason}) — page will NOT be marked done; retried next cycle\n`,
+            );
+          },
+        });
+      } catch (err) {
+        if (isAbortError(err)) throw err;
+        if (err instanceof BudgetExhausted) throw err;
+        // Per-chunk LLM failures are best-effort; loop continues.
+        process.stderr.write(
+          `[extract-conversation-facts] segment ${seg.startIso}..${seg.endIso} extractor failed: ${(err as Error).message}\n`,
+        );
+        extracted = [];
+      }
+
+      state.result.facts_extracted += extracted.length;
+
+      if (!state.dryRun && extracted.length > 0) {
+        // Eng-v2 C1 / E11: page-global row_num. Each fact in this batch gets
+        // a unique row_num within (source_id, source_markdown_slug); the
+        // accumulator increments across the segment/chunk loop.
+        const rows = extracted.map((fact, i) => ({
+          ...fact,
+          row_num: rowNum + i,
+          source_markdown_slug: page.slug,
+          source: PER_SEGMENT_SOURCE_PREFIX,
+          source_session: sessionId,
+          context:
+            fact.context ?? `from ${page.slug} segment ${seg.startIso}..${seg.endIso}`,
+        }));
+        try {
+          const ins = await state.engine.insertFacts(rows, { source_id: state.sourceId }); // gbrain-allow-direct-insert: canonical bulk extraction path for conversation pages — fences-as-system-of-record doesn't apply because conversations don't carry `## Facts` fences (the chat-log shape is the source-of-truth)
+          pageInsertedTotal += ins.inserted;
+          state.result.facts_inserted += ins.inserted;
+        } catch (err) {
+          if (isAbortError(err)) throw err;
+          // Batch failure is best-effort — segment is the transactional
+          // boundary, so a duplicate-key or constraint error rolls back
+          // this chunk only. Loop continues.
           process.stderr.write(
-            `[extract-conversation-facts] ${page.slug} segment ${seg.startIso}..${seg.endIso} chat call failed (${info.reason}) — page will NOT be marked done; retried next cycle\n`,
+            `[extract-conversation-facts] segment ${seg.startIso}..${seg.endIso} insertFacts failed: ${(err as Error).message}\n`,
           );
-        },
-      });
-    } catch (err) {
-      if (isAbortError(err)) throw err;
-      if (err instanceof BudgetExhausted) throw err;
-      // Per-segment LLM failures are best-effort; loop continues.
-      process.stderr.write(
-        `[extract-conversation-facts] segment ${seg.startIso}..${seg.endIso} extractor failed: ${(err as Error).message}\n`,
-      );
-      extracted = [];
+        }
+        rowNum += extracted.length;
+      } else {
+        // dry-run: count for reporting, no DB write.
+        rowNum += extracted.length;
+      }
+
+      if (state.sleepMs > 0) await sleep(state.sleepMs);
     }
 
     state.result.segments_processed++;
     segmentsThisPage++;
-    state.result.facts_extracted += extracted.length;
-
-    if (!state.dryRun && extracted.length > 0) {
-      // Eng-v2 C1 / E11: page-global row_num. Each fact in this batch gets
-      // a unique row_num within (source_id, source_markdown_slug); the
-      // accumulator increments across the segment loop.
-      const rows = extracted.map((fact, i) => ({
-        ...fact,
-        row_num: rowNum + i,
-        source_markdown_slug: page.slug,
-        source: PER_SEGMENT_SOURCE_PREFIX,
-        source_session: sessionId,
-        context:
-          fact.context ?? `from ${page.slug} segment ${seg.startIso}..${seg.endIso}`,
-      }));
-      try {
-        const ins = await state.engine.insertFacts(rows, { source_id: state.sourceId }); // gbrain-allow-direct-insert: canonical bulk extraction path for conversation pages — fences-as-system-of-record doesn't apply because conversations don't carry `## Facts` fences (the chat-log shape is the source-of-truth)
-        pageInsertedTotal += ins.inserted;
-        state.result.facts_inserted += ins.inserted;
-      } catch (err) {
-        if (isAbortError(err)) throw err;
-        // Batch failure is best-effort — segment is the transactional
-        // boundary, so a duplicate-key or constraint error rolls back
-        // this segment only. Loop continues.
-        process.stderr.write(
-          `[extract-conversation-facts] segment ${seg.startIso}..${seg.endIso} insertFacts failed: ${(err as Error).message}\n`,
-        );
-      }
-      rowNum += extracted.length;
-    } else {
-      // dry-run: count for reporting, no DB write.
-      rowNum += extracted.length;
-    }
-
     newestEnd = seg.endIso;
-    if (state.sleepMs > 0) await sleep(state.sleepMs);
   }
 
   // KOA Step B (2026-06-06): if any segment's chat() call failed (outage /
