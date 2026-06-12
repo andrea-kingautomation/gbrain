@@ -241,6 +241,46 @@ export async function runPhaseSynthesizeConcepts(
     await maybeYield();
   }
 
+  // v0.43 (self-maintenance): prune concepts that no longer qualify.
+  // The synthesis loop only UPSERTS qualifying groups (≥TIER_T3_MIN live
+  // atoms); pre-v0.43 it never removed concept pages whose supporting atoms
+  // were later deleted, so orphans accumulated on every run and the concept
+  // layer drifted from the atom set (the 2026-06-12 atom-misattribution
+  // cleanup left 16 orphan concepts with <2 live atoms). This soft-deletes
+  // any phase-owned concept whose current live-atom support has fallen below
+  // TIER_T3_MIN. The two early returns above already bail on a transient
+  // empty atom/group read, so we never reach here with a bogus empty set;
+  // the support count is recomputed from the live atom frontmatter in SQL
+  // (not from reconstructed slugs), so it is immune to slug normalization.
+  let conceptsPruned = 0;
+  if (!opts.dryRun) {
+    try {
+      const pruned = await engine.executeRaw<{ slug: string }>(
+        `UPDATE pages c
+            SET deleted_at = now(),
+                frontmatter = frontmatter
+                  || '{"stale_concept_cleanup":"auto","stale_reason":"sub_threshold_on_resynthesis"}'::jsonb
+          WHERE c.type = 'concept'
+            AND c.deleted_at IS NULL
+            AND (c.frontmatter->>'synthesized_by') LIKE 'synthesize_concepts%'
+            AND ( SELECT count(*)
+                    FROM pages a
+                    CROSS JOIN LATERAL jsonb_array_elements_text(a.frontmatter->'concepts') AS t(tag)
+                   WHERE a.type = 'atom'
+                     AND a.deleted_at IS NULL
+                     AND lower(t.tag) = replace(lower(c.slug), 'concepts/', '') ) < $1
+        RETURNING c.slug`,
+        [TIER_T3_MIN],
+      );
+      conceptsPruned = pruned.length;
+      if (conceptsPruned > 0) {
+        console.log(`[synthesize_concepts] pruned ${conceptsPruned} sub-threshold concept(s)`);
+      }
+    } catch (err) {
+      console.error(`[synthesize_concepts] concept prune failed (non-fatal): ${(err as Error).message}`);
+    }
+  }
+
   // v0.42 Wave B3: receipt + rollup for synthesize_concepts. Brain-global
   // phase — uses 'default' source_id because concepts span sources. Receipt
   // only fires when concepts were actually written; rollup always fires so
@@ -282,9 +322,11 @@ export async function runPhaseSynthesizeConcepts(
     summary:
       `synthesize_concepts: ${conceptsWritten} concepts ` +
       `(T1=${tierCounts.T1} T2=${tierCounts.T2} T3=${tierCounts.T3})` +
+      (conceptsPruned > 0 ? ` (${conceptsPruned} pruned)` : '') +
       (failures.length > 0 ? ` (${failures.length} LLM-failed → template fallback)` : ''),
     details: {
       concepts_written: conceptsWritten,
+      concepts_pruned: conceptsPruned,
       tier_counts: tierCounts,
       groups_found: atomGroups.length,
       atoms_seen: atoms.length,
