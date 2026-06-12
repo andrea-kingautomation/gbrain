@@ -491,7 +491,12 @@ export function inferTypeFromPack(
   filePath: string | undefined,
   pack: { page_types: ReadonlyArray<{ name: string; path_prefixes: ReadonlyArray<string> }> },
 ): PageType {
-  if (!filePath) return 'concept';
+  // Catch-all default is 'note', NOT 'concept'. 'concept' is a SYNTHESIZED
+  // type (only synthesize-concepts.ts may mint it); using it as the import
+  // fallback silently mis-bucketed every untyped page as a concept, which is
+  // exactly the pollution that produced 182 fake concepts. 'note' is the
+  // neutral bucket and matches inferFrontmatter's DIRECTORY_RULES default.
+  if (!filePath) return 'note';
   // Empty pack → fall back to gbrain-base hardcoded defaults.
   if (pack.page_types.length === 0) {
     return inferTypeWithPrefixes(filePath, GBRAIN_BASE_PATH_PREFIXES);
@@ -505,7 +510,7 @@ export function inferTypeFromPack(
       }
     }
   }
-  return 'concept';
+  return 'note';
 }
 
 /**
@@ -538,7 +543,7 @@ export function inferTypeAndSubtypeFromPack(
   }> },
   frontmatter?: Record<string, unknown>,
 ): { type: PageType; subtype?: string } {
-  if (!filePath) return { type: 'concept' };
+  if (!filePath) return { type: 'note' };
   // Empty pack → legacy fallback; no subtype info available.
   if (pack.page_types.length === 0) {
     return { type: inferTypeWithPrefixes(filePath, GBRAIN_BASE_PATH_PREFIXES) };
@@ -555,7 +560,7 @@ export function inferTypeAndSubtypeFromPack(
       }
     }
   }
-  if (!matchedType) return { type: 'concept' };
+  if (!matchedType) return { type: 'note' };
   const typeName = matchedType.name as PageType;
   // Stage 2: subtype rule resolution (if any declared)
   const subtypes = matchedType.subtypes ?? [];
@@ -589,14 +594,14 @@ function inferTypeWithPrefixes(
   filePath: string | undefined,
   table: ReadonlyArray<{ prefixes: ReadonlyArray<string>; type: PageType }>,
 ): PageType {
-  if (!filePath) return 'concept';
+  if (!filePath) return 'note';
   const lower = ('/' + filePath).toLowerCase();
   for (const row of table) {
     for (const p of row.prefixes) {
       if (lower.includes(p)) return row.type;
     }
   }
-  return 'concept';
+  return 'note';
 }
 
 function inferTitle(filePath?: string): string {
