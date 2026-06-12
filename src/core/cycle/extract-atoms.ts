@@ -120,6 +120,10 @@ interface ExtractedAtom {
   lesson?: string;
   virality_score?: number;
   emotional_register?: string;
+  // 1-3 durable topic tags. synthesize-concepts.ts groups atoms by this
+  // frontmatter.concepts[] array to mint concept pages; without it the
+  // concept layer can never populate (was the concepts=0 root cause).
+  concepts?: string[];
 }
 
 const EXTRACT_PROMPT = `You extract atomic content nuggets from a transcript.
@@ -134,9 +138,15 @@ Output a JSON array of atoms (1-3 per transcript, never more than 3).
 Each atom: {title (≤80 chars), atom_type, body (2-4 sentences),
 source_quote (verbatim ≤200 chars), lesson (one sentence), virality_score
 (0-100), emotional_register (one of: shocking, inspiring, funny, sobering,
-practical, controversial)}.
+practical, controversial), concepts (1-3 durable topic tags)}.
 
 atom_type MUST be one of: ${ATOM_TYPES.join(', ')}.
+
+concepts: 1-3 SHORT, REUSABLE topic tags naming the durable subject the atom
+is about (e.g. "knowledge graphs", "agent orchestration", "content strategy").
+Tag the TOPIC, never the transcript. Prefer existing well-known nouns over
+inventing phrases, lowercase, no trailing punctuation. These group atoms into
+concept pages, so consistency across atoms matters more than novelty.
 
 Output ONLY the JSON array, no prose.`;
 
@@ -352,11 +362,21 @@ export async function runPhaseExtractAtoms(
         : await loadConfigWithEngine(engine);
       const cfg = (cfgRaw ?? {}) as unknown as Record<string, unknown>;
       const dream = cfg.dream as
-        | { synthesize?: { session_corpus_dir?: string; meeting_transcripts_dir?: string } }
+        | { synthesize?: { session_corpus_dir?: string; meeting_transcripts_dir?: string; session_corpus_source_id?: string } }
         | undefined;
       const corpusDir = dream?.synthesize?.session_corpus_dir;
       const meetingDir = dream?.synthesize?.meeting_transcripts_dir;
-      if (corpusDir !== undefined) {
+      // BUGFIX 2026-06-12: session_corpus_dir is a SINGLE global folder, but this
+      // phase runs once per source. Without an ownership gate, every source's run
+      // re-atomized that one corpus and stamped the atoms with the current sourceId,
+      // scattering ~4.7k koa-conversations atoms across fathom-meetings, koa-attachments
+      // and vexa-meetings (the latter has no meetings of its own). The corpus belongs to
+      // exactly ONE source: an explicit session_corpus_source_id, else the dir's basename
+      // (the koa-conversations folder -> the 'koa-conversations' source). Every other
+      // source relies solely on its own (source-scoped) page side.
+      const corpusOwner = dream?.synthesize?.session_corpus_source_id
+        ?? (corpusDir !== undefined ? corpusDir.replace(/\/+$/, '').split('/').pop() : undefined);
+      if (corpusDir !== undefined && sourceId === corpusOwner) {
         const discovered = discoverTranscripts({
           corpusDir,
           meetingTranscriptsDir: meetingDir,
@@ -540,8 +560,13 @@ export async function runPhaseExtractAtoms(
                 ...(atom.lesson && { lesson: atom.lesson }),
                 ...(atom.virality_score !== undefined && { virality_score: atom.virality_score }),
                 ...(atom.emotional_register && { emotional_register: atom.emotional_register }),
+                // concepts[] feeds synthesize-concepts.ts grouping. Only write
+                // when the model returned a non-empty array of strings.
+                ...(Array.isArray(atom.concepts) && atom.concepts.length > 0 && {
+                  concepts: atom.concepts.filter((c) => typeof c === 'string' && c.trim().length > 0).slice(0, 3),
+                }),
                 extracted_at: new Date().toISOString(),
-                extracted_by: 'extract_atoms-v0.41.2.1',
+                extracted_by: 'extract_atoms-v0.42-concepts',
               },
               timeline: '',
             },
