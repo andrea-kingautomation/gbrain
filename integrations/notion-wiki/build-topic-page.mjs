@@ -39,7 +39,12 @@ const BRIEF_DIR = path.join(HOME, ".gbrain/integrations/notion-wiki/briefs");
 
 // OmniRoute internal endpoint (HTTP). The reasoning combo gbrain actually runs on.
 const OMNI_URL = process.env.OMNIROUTE_URL || "http://127.0.0.1:20128/v1/chat/completions";
-const OMNI_MODEL = process.env.OMNIROUTE_COMBO || "koa-gbrain-reasoning";
+// Direct provider route, NOT a koa-* aggregated combo. The combos (koa-gbrain-reasoning,
+// koa-claude-sonnet-resilient) hang with zero bytes on any non-trivial generation — that
+// silently stranded the wiki from 2026-06-10. koa-gbrain-reasoning resolved to sonnet-4-6
+// under the hood anyway, so the direct route is the same model, minus the broken combo
+// layer (verified: returns full HTML in ~45s where the combo timed out at 175s+).
+const OMNI_MODEL = process.env.OMNIROUTE_COMBO || "agy/claude-sonnet-4-6";
 
 function dbUrl() {
   const cfg = JSON.parse(fs.readFileSync(path.join(HOME, ".gbrain/config.json"), "utf8"));
@@ -170,18 +175,49 @@ async function render(brief) {
       return m ? m[1].trim() : process.env.OMNIROUTE_API_KEY;
     } catch { return process.env.OMNIROUTE_API_KEY; }
   })();
-  const res = await fetch(OMNI_URL, {
-    method: "POST",
-    headers: { "Content-Type": "application/json", Authorization: `Bearer ${key}` },
-    body: JSON.stringify({
-      model: OMNI_MODEL,
-      messages: [{ role: "user", content: DESIGN_BRIEF(brief, await fetchTemplateSpec(brief.template)) }],
-      temperature: 0.5,
-      stream: false,
-      max_tokens: 16000,
-    }),
+  const body = JSON.stringify({
+    model: OMNI_MODEL,
+    messages: [{ role: "user", content: DESIGN_BRIEF(brief, await fetchTemplateSpec(brief.template)) }],
+    temperature: 0.5,
+    // MUST stream. The koa-gbrain-reasoning combo never returns on stream:false
+    // (the connection hangs with zero bytes until it times out), which is what
+    // silently stranded the wiki from 2026-06-10. Streaming returns chunks reliably;
+    // the SSE accumulator below collects them. (res.text() drains the full stream.)
+    stream: true,
+    max_tokens: 16000,
   });
-  const raw = await res.text();
+  // The reasoning combo is a slow (60-120s) generation against a local LLM gateway
+  // that can blip (OmniRoute restarts, transient socket resets). With no retry a
+  // single "fetch failed" aborts the whole 6-hourly refresh and nothing republishes
+  // until the next tick — which silently stranded the wiki for days (2026-06-13).
+  // Retry with backoff + a hard per-attempt timeout so a hung gen fails over instead
+  // of wedging cron. Tunable via OMNI_ATTEMPTS / OMNI_TIMEOUT_MS.
+  const attempts = parseInt(process.env.OMNI_ATTEMPTS || "3", 10);
+  const timeoutMs = parseInt(process.env.OMNI_TIMEOUT_MS || "360000", 10);
+  let raw = "", res, lastErr;
+  for (let attempt = 1; attempt <= attempts; attempt++) {
+    const ac = new AbortController();
+    const timer = setTimeout(() => ac.abort(), timeoutMs);
+    try {
+      res = await fetch(OMNI_URL, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${key}` },
+        body,
+        signal: ac.signal,
+      });
+      raw = await res.text();
+      if (res.status >= 500) throw new Error(`OmniRoute ${res.status}: ${raw.slice(0, 200)}`);
+      lastErr = null;
+      break;
+    } catch (e) {
+      lastErr = e;
+      console.error(`[render] attempt ${attempt}/${attempts} failed: ${e.message || e}`);
+      if (attempt < attempts) await new Promise((r) => setTimeout(r, attempt * 4000));
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+  if (lastErr) throw new Error(`OmniRoute unreachable after ${attempts} attempts: ${lastErr.message || lastErr}`);
   if (!res.ok) throw new Error(`OmniRoute ${res.status}: ${raw.slice(0, 240)}`);
   // The reasoning combo may answer as a single JSON object OR as an SSE stream
   // ("data: {...}\n\n" chunks). Handle both: collect choices[].delta.content.
