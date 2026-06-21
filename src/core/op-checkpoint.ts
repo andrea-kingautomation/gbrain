@@ -1,3 +1,11 @@
+Looking at the conflict:
+
+- **BASE**: The second UNION arm has no `corrupt` column, no `jsonb_typeof` guard, no third arm.
+- **OURS**: Adds the `jsonb_typeof` guard but omits `0 AS corrupt` in the second SELECT (making it invalid SQL for a UNION ALL with differing column counts), and omits the third corruption-detection arm.
+- **THEIRS**: Adds `0 AS corrupt` to the second arm, the `jsonb_typeof` guard, and a third arm for the corrupt-parent case.
+
+Both sides intend the `jsonb_typeof` guard; THEIRS is the complete, valid SQL form. OURS is a partial/broken attempt at the same thing. The correct resolution takes THEIRS entirely for this hunk.
+
 import { createHash } from 'crypto';
 import type { BrainEngine } from './engine.ts';
 import { withRetry, BULK_RETRY_OPTS, RetryAbortError } from './retry.ts';
@@ -122,17 +130,39 @@ export async function loadOpCheckpoint(
     // dedupes, so we skip a server-side dedup sort over up to 204K rows on every
     // resume. `jsonb_array_elements_text` expands the legacy array server-side,
     // which also removes the old postgres.js-vs-PGLite string/array handling.
-    const rows = await engine.executeRaw<{ ckey: unknown }>(
-      `SELECT path AS ckey FROM op_checkpoint_paths
+    //
+    // v0.42.x (BUG 3 guard): the legacy arm is gated on
+    // `jsonb_typeof(completed_keys) = 'array'`. Without it a non-array (scalar)
+    // parent row makes jsonb_array_elements_text throw "cannot extract elements
+    // from a scalar", which kills the WHOLE union — including the valid child
+    // rows — and loses all checkpoint progress for the key. Skipping the scalar
+    // keeps the child rows; the third arm flags the corruption so we log it once
+    // (migration v119's CHECK makes this impossible going forward; a hit implies
+    // schema drift / disabled constraint / an out-of-band writer).
+    const rows = await engine.executeRaw<{ ckey: unknown; corrupt: number }>(
+      `SELECT path AS ckey, 0 AS corrupt FROM op_checkpoint_paths
          WHERE op = $1 AND fingerprint = $2
        UNION ALL
-       SELECT jsonb_array_elements_text(completed_keys) AS ckey FROM op_checkpoints
-         WHERE op = $1 AND fingerprint = $2 AND jsonb_typeof(completed_keys) = 'array'`,
+       SELECT jsonb_array_elements_text(completed_keys) AS ckey, 0 AS corrupt FROM op_checkpoints
+         WHERE op = $1 AND fingerprint = $2 AND jsonb_typeof(completed_keys) = 'array'
+       UNION ALL
+       SELECT NULL AS ckey, 1 AS corrupt FROM op_checkpoints
+         WHERE op = $1 AND fingerprint = $2 AND jsonb_typeof(completed_keys) <> 'array'`,
       [key.op, key.fingerprint],
     );
     const set = new Set<string>();
+    let corruptParent = false;
     for (const r of rows) {
+      if (Number(r.corrupt) === 1) {
+        corruptParent = true;
+        continue;
+      }
       if (typeof r.ckey === 'string') set.add(r.ckey);
+    }
+    if (corruptParent) {
+      console.error(
+        `[op-checkpoint] WARNING: op_checkpoints.completed_keys for (${key.op}, ${key.fingerprint}) is a non-array (scalar) and was skipped to protect the load — child op_checkpoint_paths rows still applied. This implies schema drift, a disabled CHECK constraint, or an out-of-band writer.`,
+      );
     }
     return [...set];
   } catch (e) {
