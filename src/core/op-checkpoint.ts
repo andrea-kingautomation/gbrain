@@ -1,11 +1,3 @@
-Looking at the conflict:
-
-- **BASE**: The second UNION arm has no `corrupt` column, no `jsonb_typeof` guard, no third arm.
-- **OURS**: Adds the `jsonb_typeof` guard but omits `0 AS corrupt` in the second SELECT (making it invalid SQL for a UNION ALL with differing column counts), and omits the third corruption-detection arm.
-- **THEIRS**: Adds `0 AS corrupt` to the second arm, the `jsonb_typeof` guard, and a third arm for the corrupt-parent case.
-
-Both sides intend the `jsonb_typeof` guard; THEIRS is the complete, valid SQL form. OURS is a partial/broken attempt at the same thing. The correct resolution takes THEIRS entirely for this hunk.
-
 import { createHash } from 'crypto';
 import type { BrainEngine } from './engine.ts';
 import { withRetry, BULK_RETRY_OPTS, RetryAbortError } from './retry.ts';
