@@ -189,6 +189,16 @@ export async function recordCompleted(
   // string[] to a Postgres text[] and convert server-side via to_jsonb($3::text[])
   // — the same native-array path APPEND_PATHS_SQL uses; round-trip verified to
   // produce jsonb_typeof='array'.
+  // #2339: bind through `$3::text::jsonb`, NOT `$3::jsonb`. Under postgres.js
+  // `.unsafe(sql, params)` (executeRawDirect's path) a JS string bound to a
+  // `$N::jsonb` param double-encodes — the text→jsonb cast wraps the already-JSON
+  // string into a jsonb *string scalar*, which fails the v119
+  // `op_checkpoints_completed_keys_array CHECK (jsonb_typeof = 'array')` and aborts
+  // every sync on real Postgres (PGLite parses it silently, which hid the bug).
+  // Casting through `text` first binds it as a plain text param so the text→jsonb
+  // cast parses it into a genuine jsonb array. This is the positional-param form of
+  // the CLAUDE.md double-encode trap (the grep guard only caught the template form).
+  // Sync uses `appendCompleted` (below, `unnest($3::text[])`) instead, never this.
   const sorted = [...keys].sort();
   return durableWrite(engine, key, 'write', () =>
     engine.executeRawDirect(
