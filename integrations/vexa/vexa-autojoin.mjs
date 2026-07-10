@@ -25,7 +25,8 @@ const VEXA_BASE = 'https://api.cloud.vexa.ai';
 const STATE_DIR = join(os.homedir(), '.gbrain', 'state');
 const DISPATCH_STATE = join(STATE_DIR, 'vexa-dispatched.json');
 const MEETINGS_SRC = join(os.homedir(), '.gbrain', 'sources', 'vexa-meetings');
-const JOIN_WINDOW_MIN = 5;     // dispatch a bot when a meeting starts within this window
+const JOIN_WINDOW_MIN = 10;    // dispatch a bot when a meeting starts within this forward window
+const LOOKBACK_MIN = 10;       // also catch meetings already underway (started up to this many min ago)
 const op = (item) => { try { return execSync(`/home/claude/bin/op read 'op://api keys/${item}/credential'`, { encoding: 'utf8' }).trim(); } catch { return ''; } };
 const COMPOSIO_API_KEY = process.env.COMPOSIO_API_KEY || op('composio project api key');
 const VEXA_API_KEY = process.env.VEXA_API_KEY || op('vexa.ai meeting bot');
@@ -59,7 +60,11 @@ async function ownedCalendarIds(user_id, connected_account_id) {
   const { json } = await composio('/tools/execute/GOOGLECALENDAR_LIST_CALENDARS', {
     method: 'POST', body: JSON.stringify({ user_id, connected_account_id, arguments: {} }),
   });
-  const items = json?.data?.items || json?.response_data?.items || json?.items || [];
+  // Composio's GOOGLECALENDAR_LIST_CALENDARS returns the list under data.calendars (schema drift
+  // seen 2026-07-10; it was data.items). Read the current key first, keep the old keys as fallback
+  // so a future upstream revert can't silently re-break us. Without this the filter below always
+  // emptied -> silent ['primary'] fallback, so every non-primary OWNED calendar was skipped.
+  const items = json?.data?.calendars || json?.data?.items || json?.response_data?.items || json?.items || [];
   const ids = items.filter(c => ['owner', 'writer'].includes(c.accessRole)).map(c => c.id);
   return ids.length ? ids : ['primary'];
 }
@@ -82,6 +87,10 @@ async function dispatch() {
   const conns = await calendarConnections();
   if (!conns.length) { console.log(JSON.stringify({ error: 'no active googlecalendar account' })); return; }
   const now = new Date();
+  // Look BACK as well as forward: a meeting already underway (or first seen a few minutes late) must
+  // still get a bot, not be excluded because timeMin==now. Google filters by event END time > timeMin,
+  // so a meeting that already finished stays excluded; dedup by dispKey prevents any double-join.
+  const timeMin = new Date(now.getTime() - LOOKBACK_MIN * 60000);
   const timeMax = new Date(now.getTime() + JOIN_WINDOW_MIN * 60000);
   // Poll EVERY connection and EVERY owned calendar within it; merge events (tagged with connId).
   const events = [];
@@ -91,7 +100,7 @@ async function dispatch() {
     for (const calendarId of calIds) {
       const { json } = await composio('/tools/execute/GOOGLECALENDAR_EVENTS_LIST', {
         method: 'POST',
-        body: JSON.stringify({ user_id: conn.user_id, connected_account_id: conn.id, arguments: { calendarId, timeMin: now.toISOString(), timeMax: timeMax.toISOString(), singleEvents: true, orderBy: 'startTime', maxResults: 20 } }),
+        body: JSON.stringify({ user_id: conn.user_id, connected_account_id: conn.id, arguments: { calendarId, timeMin: timeMin.toISOString(), timeMax: timeMax.toISOString(), singleEvents: true, orderBy: 'startTime', maxResults: 20 } }),
       });
       const evs = json?.data?.items || json?.response_data?.items || json?.items || [];
       for (const e of evs) events.push({ ev: e, connId: conn.id });
