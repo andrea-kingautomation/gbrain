@@ -24,22 +24,49 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import crypto from "node:crypto";
+import { execFileSync } from "node:child_process";
 
 const HOME = os.homedir();
 const HERE = path.dirname(new URL(import.meta.url).pathname);
 const REGISTRY = path.join(HERE, "topics.json");
 const OUT_DIR = "/home/claude/outputs";
-const ASSET_ROOT = "/srv/brain-assets";
-const BASE_URL = "https://notebooklm.kingofautomation.com/brain";
+
+// Per-box publishing targets (R2-AC18, config-is-a-skill): env override first, then the
+// wiki-publishing domain skill via resolve_user_value, else REFUSE below. No hardcoded
+// default: a customer box must never publish into the operator's Notion or asset host.
+const REPO = process.env.AGENT_CHAKRA_REPO || "/home/claude/agent-chakra";
+function resolveUserValue(key) {
+  try {
+    const out = execFileSync(
+      "python3",
+      [path.join(REPO, "infra/openclaw/scripts/resolve_user_value.py"), "--get", key, "--json"],
+      { encoding: "utf8", timeout: 20000 },
+    );
+    const d = JSON.parse(out);
+    if (d.resolved) return String(d.value);
+  } catch {}
+  return null;
+}
+const ASSET_ROOT = process.env.WIKI_ASSET_ROOT || resolveUserValue("wiki.assets.root");
+const BASE_URL = process.env.WIKI_ASSET_BASE_URL || resolveUserValue("wiki.assets.base_url");
 const SECRET_FILE = path.join(HOME, ".gbrain/secrets/notion-wiki.env");
 const STATE_FILE = path.join(HOME, ".gbrain/integrations/notion-wiki/topic-state.json");
 const ASSETS_STATE = path.join(HOME, ".gbrain/integrations/notion-wiki/assets-state.json");
 const NOTION_VERSION = "2022-06-28";
 const NOTION_BASE = "https://api.notion.com/v1";
-// The operator's existing "G-Brain" database (holds "Andrea's Operating
-// Principles"). All topic rows MUST live here, not in a self-created DB.
-// Override via env if the workspace ever moves it.
-const TARGET_DB_ID = process.env.NOTION_KB_DB_ID || "375eaa93-c844-8114-8fa0-ceba5a907e50";
+// The box's own Knowledge-Base database. All topic rows live there, not in a
+// self-created DB. env NOTION_KB_DB_ID -> wiki.notion.kb_db_id (domain skill) -> refuse.
+const TARGET_DB_ID = process.env.NOTION_KB_DB_ID || resolveUserValue("wiki.notion.kb_db_id");
+if (!TARGET_DB_ID || !BASE_URL || !ASSET_ROOT) {
+  console.error(
+    "publish-topic: per-box publishing target unresolved " +
+      `(kb_db_id=${!!TARGET_DB_ID} asset_base_url=${!!BASE_URL} asset_root=${!!ASSET_ROOT}). ` +
+      "Fill skills/wiki-publishing values (wiki.notion.kb_db_id / wiki.assets.*) or set " +
+      "NOTION_KB_DB_ID / WIKI_ASSET_BASE_URL / WIKI_ASSET_ROOT. Refusing to publish; " +
+      "never an operator fallback.",
+  );
+  process.exit(2);
+}
 // treatment/template -> the DB's "Asset Type" select option.
 function assetTypeFor(topic) {
   const t = `${topic.treatment || ""} ${topic.template || ""}`.toLowerCase();
@@ -166,6 +193,7 @@ async function main() {
 
   TOKEN = DRY ? null : token();
   if (!DRY && !TOKEN) throw new Error("no NOTION_API_KEY (env or ~/.gbrain/secrets/notion-wiki.env)");
+  console.log(`[target] Notion KB DB ${TARGET_DB_ID} · assets ${BASE_URL} (per-box resolution)`);
 
   const state = loadJson(STATE_FILE, { topics: {} });
   state.topics = state.topics || {};

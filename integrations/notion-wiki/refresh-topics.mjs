@@ -56,8 +56,16 @@ function signature(topic, reg) {
 function hoursSince(iso) { if (!iso) return Infinity; return (Date.now() - Date.parse(iso)) / 3.6e6; }
 
 function rebuild(id) {
-  execFileSync("node", [path.join(HERE, "build-topic-page.mjs"), id], { stdio: "inherit" });
-  execFileSync("node", [path.join(HERE, "publish-topic.mjs"), id], { stdio: "inherit" });
+  // One topic's failure (e.g. publish-topic refusing because the box has no resolved
+  // publishing target, R2-AC18) must not abort the remaining topics.
+  try {
+    execFileSync("node", [path.join(HERE, "build-topic-page.mjs"), id], { stdio: "inherit" });
+    execFileSync("node", [path.join(HERE, "publish-topic.mjs"), id], { stdio: "inherit" });
+    return true;
+  } catch (e) {
+    console.error(`[refresh] ${id}: rebuild failed (${e.status ?? e.message}); continuing`);
+    return false;
+  }
 }
 
 function main() {
@@ -81,9 +89,10 @@ function main() {
       : `matured +${newPages}`;
     console.log(`[${go ? "REBUILD" : "skip   "}] ${topic.id.padEnd(26)} count=${sig.count} (+${newPages}) :: ${why}`);
     if (go && !DRY) {
-      rebuild(topic.id);
-      state.topics[topic.id] = { ...(state.topics[topic.id] || {}), built_signature: sig, built_at: new Date().toISOString() };
-      rebuilt++;
+      if (rebuild(topic.id)) {
+        state.topics[topic.id] = { ...(state.topics[topic.id] || {}), built_signature: sig, built_at: new Date().toISOString() };
+        rebuilt++;
+      }
     } else if (go && DRY) { rebuilt++; }
   }
   if (!DRY) { fs.mkdirSync(path.dirname(STATE_FILE), { recursive: true }); fs.writeFileSync(STATE_FILE, JSON.stringify(state, null, 2)); }

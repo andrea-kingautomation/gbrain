@@ -14,7 +14,27 @@ import path from "node:path";
 
 const HOME = os.homedir();
 const SECRET_FILE = path.join(HOME, ".gbrain/secrets/notion-wiki.env");
-const DB = process.env.NOTION_KB_DB_ID || "375eaa93-c844-8114-8fa0-ceba5a907e50";
+// Per-box KB database (R2-AC18): env -> wiki-publishing domain skill -> refuse.
+// Never a hardcoded operator DB.
+import { execFileSync } from "node:child_process";
+const REPO = process.env.AGENT_CHAKRA_REPO || "/home/claude/agent-chakra";
+function resolveUserValue(key) {
+  try {
+    const out = execFileSync(
+      "python3",
+      [path.join(REPO, "infra/openclaw/scripts/resolve_user_value.py"), "--get", key, "--json"],
+      { encoding: "utf8", timeout: 20000 },
+    );
+    const d = JSON.parse(out);
+    if (d.resolved) return String(d.value);
+  } catch {}
+  return null;
+}
+const DB = process.env.NOTION_KB_DB_ID || resolveUserValue("wiki.notion.kb_db_id");
+if (!DB) {
+  console.error("setup-gbrain-views: no per-box KB DB resolved (wiki.notion.kb_db_id or NOTION_KB_DB_ID); refusing.");
+  process.exit(2);
+}
 const V = "2026-03-11";
 const BASE = "https://api.notion.com/v1";
 const DRY = process.argv.includes("--dry-run");
