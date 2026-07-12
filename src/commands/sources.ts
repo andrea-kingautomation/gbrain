@@ -87,6 +87,10 @@ interface SourceListEntry {
   federated: boolean;
   page_count: number;
   last_sync_at: string | null;
+  // Human-readable scope/purpose so an agent listing sources can pick the right
+  // one(s) for what it needs to find (config.description; empty until set via
+  // `gbrain sources describe`). Kept in config JSONB, no schema migration.
+  description: string | null;
 }
 
 // ── Helpers ─────────────────────────────────────────────────
@@ -331,6 +335,7 @@ async function runList(engine: BrainEngine, args: string[]): Promise<void> {
       federated: isFederated(r.config),
       page_count: pageCount,
       last_sync_at: r.last_sync_at ? new Date(r.last_sync_at).toISOString() : null,
+      description: (parseConfig(r.config).description as string | undefined) ?? null,
     });
   }
 
@@ -348,6 +353,7 @@ async function runList(engine: BrainEngine, args: string[]): Promise<void> {
     const sync = e.last_sync_at ? `last sync ${e.last_sync_at}` : 'never synced';
     console.log(`  ${e.id.padEnd(20)}  ${fedMark.padEnd(12)}  ${String(e.page_count).padStart(6)} pages  ${sync}`);
     if (e.local_path) console.log(`  ${' '.repeat(22)}${pathStr}`);
+    if (e.description) console.log(`  ${' '.repeat(22)}↳ ${e.description}`);
   }
   if (entries.length === 0) console.log('  (no sources registered)');
 }
@@ -677,6 +683,31 @@ function runDetach(): void {
 }
 
 // ── Subcommand: federate / unfederate ───────────────────────
+
+// Set a source's human-readable scope/purpose so agents listing sources can
+// pick the right one(s) for what they need. Stored in config JSONB (no schema
+// migration); surfaced by `sources list` + `--json`. Anti-drift: the description
+// is data an agent reads live, never hardcoded into agent instructions.
+async function runDescribe(engine: BrainEngine, args: string[]): Promise<void> {
+  const id = args[0];
+  const text = args.slice(1).join(' ').trim();
+  if (!id || !text) {
+    console.error('Usage: gbrain sources describe <id> "<scope/purpose text>"');
+    process.exit(2);
+  }
+  const src = await fetchSource(engine, id);
+  if (!src) {
+    console.error(`Source "${id}" not found.`);
+    process.exit(4);
+  }
+  const config = parseConfig(src.config);
+  config.description = text;
+  await engine.executeRaw(
+    `UPDATE sources SET config = $1::text::jsonb WHERE id = $2`,
+    [JSON.stringify(config), id],
+  );
+  console.log(`Source "${id}" description set: ${text}`);
+}
 
 async function runFederate(engine: BrainEngine, args: string[], value: boolean): Promise<void> {
   const id = args[0];
@@ -1317,6 +1348,7 @@ export async function runSources(engine: BrainEngine, args: string[]): Promise<v
     case 'detach':     runDetach(); return;
     case 'federate':   return runFederate(engine, rest, true);
     case 'unfederate': return runFederate(engine, rest, false);
+    case 'describe':   return runDescribe(engine, rest);
     case 'archive':    return runArchive(engine, rest);
     case 'restore':    return runRestore(engine, rest);
     case 'purge':      return runPurge(engine, rest);
