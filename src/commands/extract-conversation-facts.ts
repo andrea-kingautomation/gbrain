@@ -265,7 +265,29 @@ export interface ExtractConversationFactsResult {
   facts_extracted: number;
   facts_inserted: number;
   budget_exhausted?: boolean;
+  /**
+   * KoA 2026-07-15 (roadmap B2 follow-up): run stopped early because the
+   * chat lane returned consecutive transport failures (lane in quota
+   * cooldown / outage). Nothing is lost — unprocessed pages stay in
+   * backlog and the next cron cycle retries; tripping the breaker turns
+   * a doomed full-backlog walk (hundreds of instant 503s against an
+   * exhausted combo) into a handful of calls per cycle.
+   */
+  lane_outage_breaker?: boolean;
   spent_usd?: number;
+}
+
+/** Consecutive chat transport failures before a run gives up for this cycle. */
+const LANE_OUTAGE_BREAKER_LIMIT = 5;
+
+class LaneOutageBreaker extends Error {
+  constructor() {
+    super(
+      `chat lane returned ${LANE_OUTAGE_BREAKER_LIMIT} consecutive transport failures — ` +
+        'stopping this cycle early; backlog retries next cycle',
+    );
+    this.name = 'LaneOutageBreaker';
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -690,6 +712,12 @@ interface ExtractCoreState {
    * batch boundaries + final flush.
    */
   cpMap: Map<string, string>;
+  /**
+   * KoA 2026-07-15: consecutive chat transport failures across the whole
+   * run (all workers — JS single-threaded mutation is safe). Reset on any
+   * successful chat call; at LANE_OUTAGE_BREAKER_LIMIT the run stops early.
+   */
+  consecutiveCallErrors: number;
 }
 
 function cpMapKey(sourceId: string, slug: string): string {
@@ -800,6 +828,7 @@ async function processPage(
 
     for (const text of chunks) {
       let extracted: Awaited<ReturnType<typeof extractFactsFromTurn>> = [];
+      const errsBefore = state.consecutiveCallErrors;
       try {
         extracted = await extractFactsFromTurn({
           turnText: text,
@@ -809,12 +838,18 @@ async function processPage(
           abortSignal: state.signal,
           onCallError: (info) => {
             pageHadCallError = true;
+            state.consecutiveCallErrors++;
             process.stderr.write(
               `[extract-conversation-facts] ${page.slug} segment ${seg.startIso}..${seg.endIso} chat call failed (${info.reason}) — page will NOT be marked done; retried next cycle\n`,
             );
           },
         });
+        // KoA 2026-07-15: a chunk that completed without onCallError means
+        // the lane is serving again — reset the outage streak.
+        if (state.consecutiveCallErrors === errsBefore) state.consecutiveCallErrors = 0;
+        if (state.consecutiveCallErrors >= LANE_OUTAGE_BREAKER_LIMIT) throw new LaneOutageBreaker();
       } catch (err) {
+        if (err instanceof LaneOutageBreaker) throw err;
         if (isAbortError(err)) throw err;
         if (err instanceof BudgetExhausted) throw err;
         // Per-chunk LLM failures are best-effort; loop continues.
@@ -1016,6 +1051,7 @@ export async function runExtractConversationFactsCore(
     types,
     signal,
     cpMap: new Map(),
+    consecutiveCallErrors: 0,
   };
 
   // Run body. Either inside the externally-provided tracker scope (no
@@ -1166,6 +1202,15 @@ export async function runExtractConversationFactsCore(
       await writeRunReceiptAndRollup(engine, sourceId, result, /* halted */ true);
       // Return partial result — caller (CLI / Minion) decides how to
       // surface. NOT a thrown failure.
+      return result;
+    }
+    if (err instanceof LaneOutageBreaker) {
+      // KoA 2026-07-15: graceful early stop, mirroring BudgetExhausted.
+      // Backlog is intact (checkpoints only advance on success) and the
+      // next cron cycle retries when the lane has capacity again.
+      result.lane_outage_breaker = true;
+      process.stderr.write(`[extract-conversation-facts] ${err.message}\n`);
+      await writeRunReceiptAndRollup(engine, sourceId, result, /* halted */ true);
       return result;
     }
     throw err;
