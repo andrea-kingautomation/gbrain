@@ -700,7 +700,21 @@ async function runDescribe(engine: BrainEngine, args: string[]): Promise<void> {
     console.error(`Source "${id}" not found.`);
     process.exit(4);
   }
-  const config = parseConfig(src.config);
+  let config = parseConfig(src.config);
+  // Legacy bad shapes: some pre-v0.42 rows hold config as a JSONB ARRAY of
+  // patch objects (seeded by a double-encoded "{}" plus `||`-append cycle
+  // stamps; see postgres-engine.updateSourceConfig's CASE normalizer).
+  // Setting a named property on an array is silently dropped by
+  // JSON.stringify, so the describe would report success and persist
+  // nothing. Collapse to a flat object first (later elements win, matching
+  // the SQL normalizer's jsonb_object_agg semantics).
+  if (Array.isArray(config)) {
+    const flat: Record<string, unknown> = {};
+    for (const el of config) {
+      if (el && typeof el === 'object' && !Array.isArray(el)) Object.assign(flat, el);
+    }
+    config = flat;
+  }
   config.description = text;
   await engine.executeRaw(
     `UPDATE sources SET config = $1::text::jsonb WHERE id = $2`,
