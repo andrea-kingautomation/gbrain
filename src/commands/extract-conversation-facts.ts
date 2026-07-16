@@ -815,6 +815,8 @@ async function processPage(
   // stays in backlog and is retried next cycle instead of being marked
   // "done" with zero facts during a model outage (the Jun-5 freeze).
   let pageHadCallError = false;
+  // KoA C13 2026-07-16: per-chunk router-cooldown retry budget (see below).
+  const cooldownRetries = new Map<string, number>();
 
   for (const seg of segments) {
     if (state.segmentLimit > 0 && segmentsThisPage >= state.segmentLimit) break;
@@ -826,9 +828,11 @@ async function processPage(
     const chunks = renderSegmentChunks(page.title || page.slug, seg);
     const sessionId = `${PER_SEGMENT_SOURCE_PREFIX}:${page.slug}`;
 
-    for (const text of chunks) {
+    for (let ci = 0; ci < chunks.length; ci++) {
+      const text = chunks[ci];
       let extracted: Awaited<ReturnType<typeof extractFactsFromTurn>> = [];
-      const errsBefore = state.consecutiveCallErrors;
+      let chunkCallFailed = false;
+      let lastCallErrorDetail = '';
       try {
         extracted = await extractFactsFromTurn({
           turnText: text,
@@ -837,16 +841,48 @@ async function processPage(
           engine: state.engine,
           abortSignal: state.signal,
           onCallError: (info) => {
-            pageHadCallError = true;
+            chunkCallFailed = true;
             state.consecutiveCallErrors++;
+            lastCallErrorDetail = String(
+              (info as { error?: unknown }).error instanceof Error
+                ? ((info as { error?: Error }).error as Error).message
+                : ((info as { error?: unknown }).error ?? 'no-detail'),
+            ).slice(0, 300);
             process.stderr.write(
-              `[extract-conversation-facts] ${page.slug} segment ${seg.startIso}..${seg.endIso} chat call failed (${info.reason}: ${String((info as { error?: unknown }).error instanceof Error ? ((info as { error?: Error }).error as Error).message : (info as { error?: unknown }).error ?? 'no-detail').slice(0, 300)}) — page will NOT be marked done; retried next cycle\n`,
+              `[extract-conversation-facts] ${page.slug} segment ${seg.startIso}..${seg.endIso} chat call failed (${info.reason}: ${lastCallErrorDetail}) — page will NOT be marked done; retried next cycle\n`,
             );
           },
         });
         // KoA 2026-07-15: a chunk that completed without onCallError means
         // the lane is serving again — reset the outage streak.
-        if (state.consecutiveCallErrors === errsBefore) state.consecutiveCallErrors = 0;
+        if (!chunkCallFailed) state.consecutiveCallErrors = 0;
+        // KoA C13 2026-07-16: router-cooldown-aware retry. The koa-gbrain
+        // size-router sheds requests during an upstream-503 cooldown with an
+        // explicit "retry after Ns" — the gateway chat client's ~6s of fast
+        // retries can never outlast an 86s window, so every chunk call inside
+        // it failed instantly, tripping the outage breaker and restarting the
+        // whole page next cycle (the Jun-11→Jul-16 Sisyphus loop on the big
+        // 13838 page). A cooldown with a known expiry is a WAIT, not an
+        // outage: sleep it out (capped 180s) and retry the same chunk, at
+        // most twice per chunk. Real outages (no retry-after) still hit the
+        // breaker exactly as before.
+        if (chunkCallFailed) {
+          const cd = lastCallErrorDetail.match(/retry after (\d+)s/);
+          const cdKey = `${seg.startIso}|${ci}`;
+          const tried = cooldownRetries.get(cdKey) ?? 0;
+          if (cd && tried < 2 && !state.signal?.aborted) {
+            cooldownRetries.set(cdKey, tried + 1);
+            const waitS = Math.min(Number(cd[1]) + 3, 180);
+            process.stderr.write(
+              `[extract-conversation-facts] router cooldown — waiting ${waitS}s then retrying chunk ${ci + 1}/${chunks.length} (attempt ${tried + 1}/2)\n`,
+            );
+            await new Promise((r) => setTimeout(r, waitS * 1000));
+            state.consecutiveCallErrors -= 1; // cooldown shed ≠ outage signal
+            ci--;
+            continue;
+          }
+          pageHadCallError = true;
+        }
         if (state.consecutiveCallErrors >= LANE_OUTAGE_BREAKER_LIMIT) throw new LaneOutageBreaker();
       } catch (err) {
         if (err instanceof LaneOutageBreaker) throw err;
