@@ -198,9 +198,9 @@ export const ALL_PHASES: CyclePhase[] = [
  *     chunks; orphans/purge sweep brain-wide; grade_takes + calibration
  *     aggregate across sources; resolve_symbol_edges walks every chunk.
  *   - `mixed`: per-phase decomposition needed before parallelizing.
- *     Synthesize reads the brain-global transcripts dir but writes to
- *     per-source slugs (via subagent allowlist). Patterns reads
- *     cross-source reflections but writes pattern pages.
+ *     (2026-07-16: synthesize + patterns moved from 'mixed' to 'global' —
+ *     see the inline note at their PHASE_SCOPE entries. No phase is
+ *     currently 'mixed'; the tier remains for future phases.)
  *
  * Per-source cycle locks (codex r2 fix) let two cycles RUN concurrently,
  * but `global` phases inside each cycle will still touch the same rows.
@@ -211,11 +211,22 @@ export const PHASE_SCOPE: Record<CyclePhase, PhaseScope> = {
   lint: 'source',
   backlinks: 'source',
   sync: 'source',
-  synthesize: 'mixed',
+  // 2026-07-16 (KoA local): synthesize + patterns reclassified 'mixed' → 'global'.
+  // Both are brain-global in practice: synthesize reads the single global
+  // dream.synthesize.session_corpus_dir config and reverse-writes wiki/ +
+  // dream-cycle-summaries/ into opts.brainDir; patterns reads cross-source
+  // reflections and reverse-writes pattern pages the same way. As 'mixed' they
+  // ran inside EVERY per-source autopilot cycle, where the #2227 fix binds
+  // brainDir to the SOURCE's own checkout — so each cycle sprayed dream/wiki
+  // output into whichever source dir its cycle ran against (10 source dirs
+  // polluted, N× duplicate LLM spend on the same global corpus). As 'global'
+  // they run once per window in autopilot-global-maintenance with
+  // brainDir = sync.repo_path, the configured brain checkout.
+  synthesize: 'global',
   extract: 'source',
   extract_facts: 'source',
   resolve_symbol_edges: 'global',
-  patterns: 'mixed',
+  patterns: 'global',
   recompute_emotional_weight: 'source',
   consolidate: 'source',
   propose_takes: 'source',
@@ -247,7 +258,8 @@ export const PHASE_SCOPE: Record<CyclePhase, PhaseScope> = {
  *
  * Per-source autopilot cycles run ONLY the source-scoped (and mixed) phases;
  * the brain-wide `global` phases (embed, orphans, purge, resolve_symbol_edges,
- * grade_takes, calibration_profile, synthesize_concepts, skillopt) run ONCE in
+ * grade_takes, calibration_profile, synthesize_concepts, skillopt, and since
+ * 2026-07-16 synthesize + patterns) run ONCE in
  * a separate `autopilot-global-maintenance` job instead of N times concurrently
  * across per-source cycles (the 4→10GB RSS blowout). Single-flight is
  * structural: one global job, not a skip-and-pretend-fresh hack (codex #1/#2).
