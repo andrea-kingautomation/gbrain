@@ -31,6 +31,19 @@ const op = (item) => { try { return execSync(`/home/claude/bin/op read 'op://api
 const COMPOSIO_API_KEY = process.env.COMPOSIO_API_KEY || op('composio project api key');
 const VEXA_API_KEY = process.env.VEXA_API_KEY || op('vexa.ai meeting bot');
 
+// C3 2026-07-16 (operator msg 20328): a Vexa bot joins Google Meet as an ANONYMOUS browser guest
+// (no Google account, no invitable email — so "invite the bot as a calendar guest" is impossible;
+// admission is host-controlled from the Meet lobby). The one lever the API exposes is bot_name, a
+// cosmetic display label (defaults to "Vexa"/"VexaBot-xxxxx"). A host is far likelier to admit a
+// recognizable, clearly-labeled notetaker than an anonymous "VexaBot-", so we name it. This does
+// NOT bypass the lobby; the Fathom hourly sync remains the guaranteed capture net.
+const BOT_NAME = process.env.VEXA_BOT_NAME || 'King of Automation Notetaker';
+const botBody = (meet) => JSON.stringify(
+  meet.passcode
+    ? { platform: meet.platform, native_meeting_id: meet.native_meeting_id, passcode: meet.passcode, bot_name: BOT_NAME }
+    : { platform: meet.platform, native_meeting_id: meet.native_meeting_id, bot_name: BOT_NAME }
+);
+
 async function composio(path, opts = {}) {
   const r = await fetch(COMPOSIO_BASE + path, { ...opts, headers: { 'x-api-key': COMPOSIO_API_KEY, 'Content-Type': 'application/json', ...(opts.headers || {}) } });
   return { status: r.status, json: await r.json().catch(() => null) };
@@ -115,7 +128,7 @@ async function dispatch() {
     if (!attending || !meet) continue;
     const dispKey = `${connId}:${ev.id}`;                 // event ids are per-calendar; namespace by connection
     if (state.dispatched[dispKey]) continue;
-    const res = await vexa('/bots', { method: 'POST', body: JSON.stringify(meet.passcode ? { platform: meet.platform, native_meeting_id: meet.native_meeting_id, passcode: meet.passcode } : { platform: meet.platform, native_meeting_id: meet.native_meeting_id }) });
+    const res = await vexa('/bots', { method: 'POST', body: botBody(meet) });
     state.dispatched[dispKey] = { at: now.toISOString(), platform: meet.platform, native_meeting_id: meet.native_meeting_id, title: ev.summary || '', vexa_status: res.status };
     acted.push({ title: ev.summary, ...meet, vexa_status: res.status });
   }
@@ -163,7 +176,7 @@ async function joinMeeting(url) {
   if (!url) { console.log(JSON.stringify({ error: 'usage: join <meeting-url>' })); return; }
   const meet = extractMeeting({ hangoutLink: url });
   if (!meet) { console.log(JSON.stringify({ error: 'unrecognized meeting URL', url })); return; }
-  const res = await vexa('/bots', { method: 'POST', body: JSON.stringify(meet.passcode ? { platform: meet.platform, native_meeting_id: meet.native_meeting_id, passcode: meet.passcode } : { platform: meet.platform, native_meeting_id: meet.native_meeting_id }) });
+  const res = await vexa('/bots', { method: 'POST', body: botBody(meet) });
   const state = loadState();
   const key = `impromptu_${meet.platform}_${meet.native_meeting_id}`;
   state.dispatched[key] = { at: new Date().toISOString(), platform: meet.platform, native_meeting_id: meet.native_meeting_id, title: 'impromptu', vexa_status: res.status };
@@ -188,7 +201,7 @@ async function watchTopic(file) {
       if (!meet) continue;
       const key = `topic_${meet.platform}_${meet.native_meeting_id}`;
       if (state.dispatched[key]) continue;
-      const res = await vexa('/bots', { method: 'POST', body: JSON.stringify(meet.passcode ? { platform: meet.platform, native_meeting_id: meet.native_meeting_id, passcode: meet.passcode } : { platform: meet.platform, native_meeting_id: meet.native_meeting_id }) });
+      const res = await vexa('/bots', { method: 'POST', body: botBody(meet) });
       state.dispatched[key] = { at: new Date().toISOString(), ...meet, title: 'from-topic', vexa_status: res.status };
       acted.push({ ...meet, vexa_status: res.status });
     }
