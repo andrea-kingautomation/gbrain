@@ -840,7 +840,7 @@ async function processPage(
             pageHadCallError = true;
             state.consecutiveCallErrors++;
             process.stderr.write(
-              `[extract-conversation-facts] ${page.slug} segment ${seg.startIso}..${seg.endIso} chat call failed (${info.reason}) — page will NOT be marked done; retried next cycle\n`,
+              `[extract-conversation-facts] ${page.slug} segment ${seg.startIso}..${seg.endIso} chat call failed (${info.reason}: ${String((info as { error?: unknown }).error instanceof Error ? ((info as { error?: Error }).error as Error).message : (info as { error?: unknown }).error ?? 'no-detail').slice(0, 300)}) — page will NOT be marked done; retried next cycle\n`,
             );
           },
         });
