@@ -126,7 +126,10 @@ async function dispatch() {
 async function collect() {
   const state = loadState();
   if (!existsSync(MEETINGS_SRC)) mkdirSync(MEETINGS_SRC, { recursive: true });
-  const { json } = await vexa('/meetings');
+  const { status, json } = await vexa('/meetings');
+  // C3 2026-07-16: a non-200 here (expired/rotated key) used to be indistinguishable from
+  // "no meetings" - total:0 forever with zero failure signal. Surface it loudly.
+  if (status !== 200) console.error(`[vexa-collect] GET /meetings HTTP ${status} - auth/API failure, transcript collection is BLIND until fixed`);
   const meetings = json?.meetings || [];
   const written = [];
   for (const mtg of meetings) {
@@ -151,7 +154,7 @@ async function collect() {
     written.push(id);
   }
   saveState(state);
-  console.log(JSON.stringify({ mode: 'collect', total: meetings.length, written }, null, 2));
+  console.log(JSON.stringify({ mode: 'collect', http: status, total: meetings.length, written }, null, 2));
 }
 
 // Impromptu: join a meeting on the spot from a pasted URL (no calendar event needed).
