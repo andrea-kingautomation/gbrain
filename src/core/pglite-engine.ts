@@ -949,11 +949,41 @@ export class PGLiteEngine implements BrainEngine {
     return { slug: r.slug, id: Number(r.id) };
   }
 
+  private async resolveCanonicalEntityWriteSource(
+    requestedSourceId: string,
+    slug: string,
+    pageType: string,
+  ): Promise<string> {
+    if (!['person', 'company', 'tool'].includes(pageType)) return requestedSourceId;
+    try {
+      const { rows } = await this.db.query(
+        `SELECT source_id
+           FROM pages
+          WHERE slug = $1
+            AND source_id <> $2
+            AND deleted_at IS NULL
+            AND type = ANY($3::text[])
+          ORDER BY CASE
+                     WHEN source_id = 'business-synthesis' THEN 0
+                     WHEN source_id = 'default' THEN 1
+                     ELSE 2
+                   END ASC,
+                   created_at ASC
+          LIMIT 1`,
+        [slug, requestedSourceId, ['person', 'company', 'tool']],
+      );
+      return (rows[0] as { source_id?: string } | undefined)?.source_id ?? requestedSourceId;
+    } catch {
+      return requestedSourceId;
+    }
+  }
+
   async putPage(slug: string, page: PageInput, opts?: { sourceId?: string }): Promise<Page> {
     slug = validateSlug(slug);
     const hash = page.content_hash || contentHash(page);
     const frontmatter = page.frontmatter || {};
-    const sourceId = opts?.sourceId ?? 'default';
+    const requestedSourceId = opts?.sourceId ?? 'default';
+    const sourceId = await this.resolveCanonicalEntityWriteSource(requestedSourceId, slug, page.type);
 
     // v0.18.0 Step 5+: source_id is now in the INSERT column list so multi-
     // source callers land on the intended (source_id, slug) row. Omitting it

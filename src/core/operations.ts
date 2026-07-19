@@ -721,6 +721,39 @@ const get_page: Operation = {
   cliHints: { name: 'get', positional: ['slug'] },
 };
 
+
+const ENTITY_SOURCE_FORK_TYPES = ['person', 'company', 'tool'];
+
+async function resolveCanonicalEntityWriteSource(
+  engine: BrainEngine,
+  requestedSourceId: string,
+  slug: string,
+): Promise<string> {
+  try {
+    const rows = await engine.executeRaw<{ source_id: string; type: string; priority: number; created_at: string }>(
+      `SELECT source_id,
+              type,
+              CASE
+                WHEN source_id = 'business-synthesis' THEN 0
+                WHEN source_id = 'default' THEN 1
+                ELSE 2
+              END AS priority,
+              created_at::text AS created_at
+         FROM pages
+        WHERE slug = $1
+          AND source_id <> $2
+          AND deleted_at IS NULL
+          AND type = ANY($3::text[])
+        ORDER BY priority ASC, created_at ASC
+        LIMIT 1`,
+      [slug, requestedSourceId, ENTITY_SOURCE_FORK_TYPES],
+    );
+    return rows[0]?.source_id ?? requestedSourceId;
+  } catch {
+    return requestedSourceId;
+  }
+}
+
 const put_page: Operation = {
   name: 'put_page',
   description: 'Write/update a page (markdown with frontmatter). Chunks, embeds, reconciles tags, and (when auto_link/auto_timeline are enabled) extracts + reconciles graph links and timeline entries. For large content on Windows (pipe-buffer limit ~45KB) or any file-as-input workflow, use `gbrain capture --file PATH --slug SLUG` — capture reads the file as a Buffer with a binary-NUL guard and adds provenance write-through (v0.39.3.0).',
@@ -814,6 +847,9 @@ const put_page: Operation = {
     // default-source clobber path. importFromContent already accepts
     // opts.sourceId (PR #707/#757 engine work); previously the op handler
     // just didn't pass it.
+    const requestedSourceId = ctx.sourceId ?? 'default';
+    const effectiveSourceId = await resolveCanonicalEntityWriteSource(ctx.engine, requestedSourceId, slug);
+
     // v0.39 T1.5: load active pack ONCE per put_page invocation; thread to
     // parseMarkdown via importFromContent so type inference honors user-defined
     // page_types. Best-effort: pack load failure falls back to legacy inferType
@@ -825,7 +861,7 @@ const put_page: Operation = {
       const resolved = await loadActivePack({
         cfg: loadConfig(),
         remote: ctx.remote === false ? false : true,
-        sourceId: ctx.sourceId,
+        sourceId: effectiveSourceId,
       });
       activePack = { page_types: resolved.manifest.page_types };
     } catch {
@@ -838,7 +874,7 @@ const put_page: Operation = {
       // markers (quarantine/content_flag/embed_skip). Fail-closed — anything
       // not strictly local is remote (matches CV6 / v0.26.9 F7b posture).
       remote: ctx.remote !== false,
-      ...(ctx.sourceId ? { sourceId: ctx.sourceId } : {}),
+      sourceId: effectiveSourceId,
       // v0.39.0.0 T1.5: pack-aware type inference (loaded above; legacy
       // inferType behavior when undefined).
       ...(activePack ? { activePack } : {}),
@@ -901,7 +937,7 @@ const put_page: Operation = {
     const isSandboxSubagent = ctx.viaSubagent === true
       && !(Array.isArray(ctx.allowedSlugPrefixes) && ctx.allowedSlugPrefixes.length > 0);
     if (!ctx.dryRun && result.status !== 'error' && !isSandboxSubagent) {
-      const sourceId = ctx.sourceId ?? 'default';
+      const sourceId = effectiveSourceId;
       const provenanceVia = ctx.remote === false ? 'put_page' : 'mcp:put_page';
       // Shared canonical write-through (also used by `gbrain brainstorm/lsd
       // --save`). Renders the file from the saved DB row and writes it
@@ -954,7 +990,7 @@ const put_page: Operation = {
       try {
         const enabled = await isAutoLinkEnabled(ctx.engine);
         if (enabled) {
-          autoLinks = await runAutoLink(ctx.engine, slug, result.parsedPage, ctx.sourceId ? { sourceId: ctx.sourceId } : undefined);
+          autoLinks = await runAutoLink(ctx.engine, slug, result.parsedPage, { sourceId: effectiveSourceId });
         }
       } catch (e) {
         autoLinks = { error: e instanceof Error ? e.message : String(e) };

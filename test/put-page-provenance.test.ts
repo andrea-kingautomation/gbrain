@@ -112,6 +112,60 @@ async function readProvenance(slug: string): Promise<{
   };
 }
 
+
+describe('put_page entity source canonicalization', () => {
+  test('direct engine entity write updates existing canonical source instead of creating a source fork', async () => {
+    await engine.executeRaw(
+      "INSERT INTO sources (id, name) VALUES ('business-synthesis', 'Business Synthesis'), ('koa-conversations', 'KoA Conversations') ON CONFLICT (id) DO NOTHING",
+      [],
+    );
+    await engine.putPage(
+      'people/direct-example',
+      { type: 'person', title: 'Direct Example', compiled_truth: 'canonical body', timeline: '', frontmatter: {} },
+      { sourceId: 'business-synthesis' },
+    );
+
+    await engine.putPage(
+      'people/direct-example',
+      { type: 'person', title: 'Direct Example', compiled_truth: 'updated direct body', timeline: '', frontmatter: {} },
+      { sourceId: 'koa-conversations' },
+    );
+
+    const rows = await engine.executeRaw<{ source_id: string; compiled_truth: string }>(
+      "SELECT source_id, compiled_truth FROM pages WHERE slug = 'people/direct-example' ORDER BY source_id",
+      [],
+    );
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.source_id).toBe('business-synthesis');
+    expect(rows[0]!.compiled_truth).toContain('updated direct body');
+  });
+
+  test('same-slug entity write updates existing canonical source instead of recreating caller-source duplicate', async () => {
+    await engine.executeRaw(
+      `INSERT INTO sources (id, name) VALUES ('business-synthesis', 'Business Synthesis'), ('koa-conversations', 'KoA Conversations') ON CONFLICT (id) DO NOTHING`,
+      [],
+    );
+    await engine.putPage(
+      'people/alice-example',
+      { type: 'person', title: 'Alice Example', compiled_truth: 'canonical body', timeline: '', frontmatter: {} },
+      { sourceId: 'business-synthesis' },
+    );
+
+    await putPageOp.handler(makeCtx({ sourceId: 'koa-conversations', remote: false }), {
+      slug: 'people/alice-example',
+      content: '---\ntype: person\ntitle: Alice Example\n---\n\nupdated from conversation writer',
+    });
+
+    const rows = await engine.executeRaw<{ source_id: string; compiled_truth: string }>(
+      `SELECT source_id, compiled_truth FROM pages WHERE slug = 'people/alice-example' ORDER BY source_id`,
+      [],
+    );
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.source_id).toBe('business-synthesis');
+    expect(rows[0]!.compiled_truth).toContain('updated from conversation writer');
+  });
+});
+
 describe('put_page provenance — trusted local caller (ctx.remote === false)', () => {
   test('client params honored: source_kind / source_uri / ingested_via populate DB', async () => {
     const ctx = makeCtx({ remote: false });
