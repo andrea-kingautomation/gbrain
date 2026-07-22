@@ -80,6 +80,63 @@ export const DEFAULT_MAX_MARKUP_RATIO = 0.85;
  *  classifier matches this token via regex. */
 export const PAGE_JUNK_PATTERN_CODE = 'PAGE_JUNK_PATTERN';
 
+/** Page kinds that are conversation transcripts (chat/turn records), not
+ *  scraped web content. The BUILT_IN_JUNK_PATTERNS set exists to catch
+ *  web-scraper INTERSTITIALS (Cloudflare "just a moment", CAPTCHA gates,
+ *  403/error-title dumps) that get ingested AS IF they were the article.
+ *  A conversation turn can legitimately *quote* any of those phrases while
+ *  discussing scraping, captchas, or errors (e.g. a real assistant turn
+ *  narrating "Upwork's Cloudflare 'verify you are human' check never
+ *  cleared"). Applying interstitial detection to a faithful chat record is
+ *  a category error: it hard-quarantines the transcript every ingest cycle.
+ *  These kinds are therefore EXEMPT from the built-in scraper-junk patterns
+ *  (oversize, markup, and operator literals still apply — those remain
+ *  meaningful for chat pages). The discriminator is the page's `type`
+ *  frontmatter, threaded to `assessContentSanity` as `page_kind`; the
+ *  conversation-shard import pipeline writes `type: conversation_turn`, so
+ *  the exemption is effectively driven by what the shard import writes. */
+export const CONVERSATION_PAGE_KINDS: ReadonlySet<string> = Object.freeze(
+  new Set(['conversation_turn', 'conversation']),
+) as ReadonlySet<string>;
+
+/** Page kinds that gbrain SYNTHESIZES internally from already-ingested
+ *  corpus, rather than fetching from the web. Atoms/reflections/patterns
+ *  come out of the synthesis cycle (src/core/cycle/extract-atoms.ts,
+ *  src/core/extract/receipt-writer.ts); entity pages (company/person/
+ *  concept/meeting/tool) are built from extracted facts. None of these can
+ *  ever BE a raw web fetch, so a Cloudflare/CAPTCHA interstitial can only
+ *  appear in their body as a legitimate *quotation* while the derived page
+ *  discusses anti-bot walls (e.g. an atom titled "Cloudflare sees hidden
+ *  browsers as guilty" that quotes "verify you are human"). Running the
+ *  scraper-junk patterns on them is the same category error as for
+ *  conversation transcripts, so they share the exemption. Kinds that DO
+ *  carry externally-fetched or uploaded raw bytes (note — the default/
+ *  fallback type for URL ingests — plus original/attachment/source) are
+ *  deliberately NOT exempt: the guard must stay fail-closed for anything
+ *  that could actually be a scraped wall. */
+export const INTERNAL_SYNTHESIS_PAGE_KINDS: ReadonlySet<string> = Object.freeze(
+  new Set([
+    'atom',
+    'reflection',
+    'pattern',
+    'extract_receipt',
+    'company',
+    'person',
+    'concept',
+    'meeting',
+    'tool',
+  ]),
+) as ReadonlySet<string>;
+
+/** Union of page kinds exempt from the built-in scraper-junk (interstitial)
+ *  patterns: conversation transcripts + internally-synthesized pages. See
+ *  the two source sets for the reasoning. Oversize/markup/operator-literal
+ *  checks still apply to every kind — only the interstitial patterns are
+ *  suppressed here. */
+export const JUNK_PATTERN_EXEMPT_PAGE_KINDS: ReadonlySet<string> = Object.freeze(
+  new Set<string>([...CONVERSATION_PAGE_KINDS, ...INTERNAL_SYNTHESIS_PAGE_KINDS]),
+) as ReadonlySet<string>;
+
 export type SanityTripReason =
   | 'oversize_warn'      // informational: bytes > bytes_warn but page lands normally
   | 'oversize_block'     // soft-block + flag: write with frontmatter.embed_skip + content_flag
@@ -382,17 +439,29 @@ export function assessContentSanity(opts: {
   const title = String(opts.title ?? '');
   const titleLower = title.toLowerCase();
 
+  // Conversation transcripts AND internally-synthesized pages are EXEMPT from
+  // the built-in scraper-interstitial patterns: a chat turn or a derived atom
+  // can faithfully quote "verify you are human", a Cloudflare "just a moment",
+  // or a 403 body while discussing scraping, and must not be hard-quarantined
+  // for doing so (see JUNK_PATTERN_EXEMPT_PAGE_KINDS). Kinds that can carry a
+  // raw web fetch (note/original/attachment/source) stay guarded — the check
+  // is fail-closed: an unknown or undefined page_kind is NOT exempt.
+  // Oversize, markup, and operator literals still apply below to every kind.
+  const isJunkExemptKind =
+    opts.page_kind != null && JUNK_PATTERN_EXEMPT_PAGE_KINDS.has(opts.page_kind);
   const junk_pattern_matches: string[] = [];
-  for (const p of BUILT_IN_JUNK_PATTERNS) {
-    const scope = p.applies_to ?? 'both';
-    let matched = false;
-    if (scope === 'title' || scope === 'both') {
-      if (p.pattern.test(title)) matched = true;
+  if (!isJunkExemptKind) {
+    for (const p of BUILT_IN_JUNK_PATTERNS) {
+      const scope = p.applies_to ?? 'both';
+      let matched = false;
+      if (scope === 'title' || scope === 'both') {
+        if (p.pattern.test(title)) matched = true;
+      }
+      if (!matched && (scope === 'body' || scope === 'both')) {
+        if (p.pattern.test(bodyHead)) matched = true;
+      }
+      if (matched) junk_pattern_matches.push(p.name);
     }
-    if (!matched && (scope === 'body' || scope === 'both')) {
-      if (p.pattern.test(bodyHead)) matched = true;
-    }
-    if (matched) junk_pattern_matches.push(p.name);
   }
 
   const literal_substring_matches: string[] = [];

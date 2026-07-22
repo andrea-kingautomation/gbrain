@@ -6300,7 +6300,7 @@ export async function buildChecks(
     const scanLimit = fullContentAudit ? null : 1000;
     const rows = scanLimit
       ? await sql`
-          SELECT p.slug, p.source_id, p.title,
+          SELECT p.slug, p.source_id, p.title, p.type,
                  LEFT(p.compiled_truth, 2048) AS body_head,
                  LEFT(COALESCE(p.timeline, ''), 1024) AS tl_head,
                  p.frontmatter
@@ -6310,7 +6310,7 @@ export async function buildChecks(
            LIMIT ${scanLimit}
         `
       : await sql`
-          SELECT p.slug, p.source_id, p.title,
+          SELECT p.slug, p.source_id, p.title, p.type,
                  LEFT(p.compiled_truth, 2048) AS body_head,
                  LEFT(COALESCE(p.timeline, ''), 1024) AS tl_head,
                  p.frontmatter
@@ -6318,12 +6318,17 @@ export async function buildChecks(
            WHERE p.deleted_at IS NULL
         `;
     const hits: Array<{ slug: string; matched: string[] }> = [];
-    const scanRows = rows as unknown as Array<{ slug: string; source_id: string; title: string; body_head: string; tl_head: string; frontmatter: Record<string, unknown> | null }>;
+    const scanRows = rows as unknown as Array<{ slug: string; source_id: string; title: string; type: string | null; body_head: string; tl_head: string; frontmatter: Record<string, unknown> | null }>;
     for (const r of scanRows) {
       const sanity = assessContentSanity({
         compiled_truth: r.body_head ?? '',
         timeline: r.tl_head ?? '',
         title: r.title ?? '',
+        // Thread page_kind so conversation transcripts that quote scraper
+        // interstitials ("verify you are human") are exempt from the
+        // built-in junk patterns here too — parity with the ingest gate
+        // (import-file), lint, quarantine, and sources audit paths (E11).
+        page_kind: r.type ?? undefined,
         bytes_warn: Number.MAX_SAFE_INTEGER, // we ONLY care about junk-pattern hits here
         bytes_block: Number.MAX_SAFE_INTEGER,
         extra_literals: literals,

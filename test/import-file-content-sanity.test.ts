@@ -138,6 +138,42 @@ A legitimate essay about handling access-denied errors in your app.`;
       expect(isQuarantined(page!.frontmatter as Record<string, unknown>)).toBe(false);
     });
   });
+
+  // E11: conversation shards (type: conversation_turn) faithfully quote
+  // interstitial phrases while discussing a Cloudflare/captcha wall. The gate
+  // receives page_kind from the `type` frontmatter, so the exemption applies
+  // at this real ingest seam — the shard lands clean, no quarantine churn.
+  test('conversation_turn quoting a captcha wall imports clean (E11 exemption)', async () => {
+    await withIsolatedHome(async () => {
+      const content = `---
+title: 'Topic 7845 — assistant turn 17'
+type: conversation_turn
+created: 2026-05-24
+---
+
+The Upwork login recovery never cleared: Cloudflare kept showing "verify you are human" and would not let us through.`;
+      const result = await importFromContent(engine, 'test/conv-captcha', content, { noEmbed: true });
+      expect(result.status).toBe('imported');
+      expect(result.quarantined).toBeUndefined();
+      const page = await engine.getPage('test/conv-captcha');
+      expect(page).not.toBeNull();
+      expect(isQuarantined(page!.frontmatter as Record<string, unknown>)).toBe(false);
+    });
+  });
+
+  test('the SAME captcha body as a note (not conversation) still quarantines', async () => {
+    await withIsolatedHome(async () => {
+      const content = `---
+title: 'note'
+type: note
+created: 2026-05-24
+---
+
+Cloudflare kept showing "verify you are human" and would not let us through.`;
+      const result = await importFromContent(engine, 'test/note-captcha', content, { noEmbed: true });
+      expect(result.quarantined).toBe(true);
+    });
+  });
 });
 
 describe('importFromContent — junk reject (opt-in disposition)', () => {

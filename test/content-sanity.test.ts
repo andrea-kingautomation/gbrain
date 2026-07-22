@@ -338,6 +338,92 @@ describe('assessContentSanity — built-in junk patterns', () => {
   });
 });
 
+// ─── JUNK-PATTERN PAGE-KIND EXEMPTION (E11) ────────────────────
+// Conversation transcripts AND internally-synthesized pages (atoms,
+// reflections, patterns, receipts, entity pages) faithfully quote
+// scraper-interstitial phrases while discussing captchas / Cloudflare walls
+// / errors, and must NOT be hard-quarantined for it. The exemption is keyed
+// on page_kind and covers ONLY the built-in scraper-junk patterns; oversize,
+// markup, and operator literals stay active for every kind. Kinds that can
+// carry a raw web fetch (note/original/attachment/source) stay guarded.
+describe('assessContentSanity — junk-pattern page-kind exemption', () => {
+  const interstitialBody =
+    'The Upwork login never cleared: the page just said "verify you are human" ' +
+    'and showed "Attention Required! | Cloudflare" with a Cloudflare Ray ID.';
+
+  // Conversation transcripts AND internally-synthesized kinds (atoms,
+  // reflections, patterns, receipts, entity pages) are exempt: none of them
+  // is ever a raw web fetch, so a quoted interstitial is legitimate.
+  for (const kind of [
+    'conversation_turn',
+    'conversation',
+    'atom',
+    'reflection',
+    'pattern',
+    'extract_receipt',
+    'company',
+    'concept',
+  ]) {
+    test(`${kind} quoting interstitial phrases is NOT quarantined`, () => {
+      const r = assessContentSanity({
+        compiled_truth: interstitialBody,
+        timeline: '',
+        title: 'Topic 7845 turn 17 / cloudflare-sees-hidden-browsers-as-guilty',
+        page_kind: kind,
+      });
+      expect(r.junk_pattern_matches).toEqual([]);
+      expect(r.shouldQuarantine).toBe(false);
+      expect(r.shouldHardBlock).toBe(false);
+    });
+  }
+
+  // Kinds that can carry a raw web fetch stay guarded. `note` is the
+  // default/fallback type for URL ingests, so it is the critical one.
+  for (const kind of ['note', 'original', 'attachment', 'source']) {
+    test(`${kind} is NOT exempt — an interstitial body still quarantines`, () => {
+      const r = assessContentSanity({
+        compiled_truth: interstitialBody,
+        timeline: '',
+        title: 'Attention Required! | Cloudflare',
+        page_kind: kind,
+      });
+      expect(r.junk_pattern_matches).toContain('captcha_required');
+      expect(r.shouldQuarantine).toBe(true);
+    });
+  }
+
+  test('the SAME body on a page with no kind still quarantines (regression guard)', () => {
+    const r = assessContentSanity({
+      compiled_truth: interstitialBody,
+      timeline: '',
+      title: 'Attention Required! | Cloudflare',
+    });
+    expect(r.junk_pattern_matches).toContain('captcha_required');
+    expect(r.shouldQuarantine).toBe(true);
+  });
+
+  test('undefined page_kind is treated as non-conversation (fail-closed)', () => {
+    const r = assessContentSanity({
+      compiled_truth: interstitialBody,
+      timeline: '',
+      title: 'x',
+    });
+    expect(r.shouldQuarantine).toBe(true);
+  });
+
+  test('conversation exemption does NOT disable operator literals', () => {
+    const r = assessContentSanity({
+      compiled_truth: 'here is the leaked value SUPERSECRETLITERAL in chat',
+      timeline: '',
+      title: 't',
+      page_kind: 'conversation_turn',
+      extra_literals: [{ name: 'secret_marker', substring: 'SUPERSECRETLITERAL' }],
+    });
+    expect(r.literal_substring_matches).toContain('secret_marker');
+    expect(r.shouldQuarantine).toBe(true);
+  });
+});
+
 // ─── REASON ORDERING + MESSAGES ────────────────────────────────
 
 describe('assessContentSanity — reason ordering', () => {
