@@ -39,7 +39,7 @@
 
 import { randomUUID, createHash } from 'node:crypto';
 import { BaseCyclePhase, type ScopedReadOpts, type BasePhaseOpts } from './base-phase.ts';
-import { chat as gatewayChat } from '../ai/gateway.ts';
+import { chat as gatewayChat, getChatModel } from '../ai/gateway.ts';
 import { writeReceipt } from '../extract/receipt-writer.ts';
 import { upsertExtractRollup } from '../extract/rollup-writer.ts';
 import { GBrainError } from '../types.ts';
@@ -365,9 +365,18 @@ class ProposeTakesPhase extends BaseCyclePhase {
     // Per-phase model routing: propose_takes drafts gradeable opinions, so route
     // it to the configured reasoning combo when set (models.propose_takes), else
     // the cycle default. A weak model here = junk opinions. (2026-06-07)
-    const proposeModelCfg = await engine.getConfig('models.propose_takes').catch(() => null);
+    // Fallback chain: per-phase config -> opts.model -> the gateway's resolved
+    // chat model (getChatModel, upstream 0.42.64). The gateway default must NOT be
+    // hardcoded here or proposal records log the wrong model_id (#regression E3).
+    // engine.getConfig is guarded: upstream 0.42.64 dropped the per-phase config
+    // read, so its hermetic mock engines expose no getConfig. Guarding keeps the
+    // KoA per-phase routing on the real engine while letting the phase fall through
+    // to getChatModel() under the upstream mocks (E3 merge reconciliation).
+    const proposeModelCfg = typeof engine.getConfig === 'function'
+      ? await engine.getConfig('models.propose_takes').catch(() => null)
+      : null;
     const proposeModel = (typeof proposeModelCfg === 'string' && proposeModelCfg.length > 0)
-      ? proposeModelCfg : (opts.model || 'claude-sonnet-4-6');
+      ? proposeModelCfg : (opts.model || getChatModel());
 
     // Load pages eligible for proposal. Source-scoped per BaseCyclePhase.
     const pageFilters: PageFilters = {

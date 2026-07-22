@@ -322,7 +322,7 @@ New prose appended here.`;
     const extractor: ProposeTakesExtractor = async () => {
       callCount++;
       if (callCount === 1) throw new Error('LLM timeout');
-      return [{ claim_text: 'second page claim', kind: 'take', holder: 'brain', weight: 0.5 }];
+      return [{ claim_text: 'The second page asserts a clear gradeable position', kind: 'take', holder: 'brain', weight: 0.5 }];
     };
     const result = await runPhaseProposeTakes(buildCtx(engine), { extractor });
 
@@ -375,7 +375,7 @@ New prose appended here.`;
     ];
     const { engine, captured } = buildMockEngine({ pages });
     const extractor: ProposeTakesExtractor = async () => [
-      { claim_text: 'x', kind: 'take', holder: 'brain', weight: 0.5 },
+      { claim_text: 'This phase run yields a stable proposal identifier', kind: 'take', holder: 'brain', weight: 0.5 },
     ];
     await runPhaseProposeTakes(buildCtx(engine), { extractor });
     const inserts = captured.filter(c => c.sql.includes('INSERT INTO take_proposals'));
