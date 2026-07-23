@@ -174,8 +174,20 @@ export function validateParams(op: Operation, params: Record<string, unknown>): 
       return `Missing required parameter: ${key}`;
     }
     if (params[key] !== undefined && params[key] !== null) {
-      const val = params[key];
+      let val = params[key];
       const expected = def.type;
+      // Tolerant coercion for the two documented client mistakes (agents that
+      // JSON-stringify scalars): numeric-string -> number, "true"/"false" ->
+      // boolean. Only fires when the string unambiguously IS that type; anything
+      // else still falls through to the strict error below. Mutates params in
+      // place so the coerced value reaches the handler (same object is passed on).
+      if (expected === 'number' && typeof val === 'string' && val.trim() !== '' && Number.isFinite(Number(val))) {
+        val = Number(val);
+        params[key] = val;
+      } else if (expected === 'boolean' && typeof val === 'string' && (val === 'true' || val === 'false')) {
+        val = val === 'true';
+        params[key] = val;
+      }
       if (expected === 'string' && typeof val !== 'string') return `Parameter "${key}" must be a string`;
       if (expected === 'number' && typeof val !== 'number') return `Parameter "${key}" must be a number`;
       if (expected === 'boolean' && typeof val !== 'boolean') return `Parameter "${key}" must be a boolean`;
