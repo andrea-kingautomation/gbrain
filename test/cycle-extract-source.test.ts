@@ -111,4 +111,26 @@ describe('cycle extract phase on a federated brain (#1503)', () => {
       expect(Number(extractPhase?.details?.linksCreated ?? 0)).toBeGreaterThanOrEqual(2);
     });
   });
+
+  test('an archived source is not inferred from its former brainDir', async () => {
+    await engine.executeRaw(`UPDATE sources SET archived = true WHERE id = 'wiki'`);
+
+    await withEnv({ GBRAIN_HOME: gbrainHome }, async () => {
+      const report = await runCycle(engine, {
+        brainDir,
+        phases: ['extract'],
+      });
+      const extractPhase = report.phases.find(p => p.phase === 'extract');
+      expect(extractPhase?.status).toBe('ok');
+      expect(Number(extractPhase?.details?.linksCreated ?? 0)).toBe(0);
+    });
+
+    const links = await engine.executeRaw<{ n: string }>(
+      `SELECT COUNT(*)::text AS n
+         FROM links l
+         JOIN pages p ON p.id = l.from_page_id
+        WHERE p.source_id = 'wiki'`,
+    );
+    expect(Number(links[0]?.n ?? 0)).toBe(0);
+  });
 });

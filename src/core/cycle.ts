@@ -877,7 +877,11 @@ async function resolveSourceForDir(
   if (brainDir === null) return undefined;
   try {
     const rows = await engine.executeRaw<{ id: string }>(
-      `SELECT id FROM sources WHERE local_path = $1 LIMIT 1`,
+      `SELECT id
+         FROM sources
+        WHERE local_path = $1
+          AND archived IS NOT TRUE
+        LIMIT 1`,
       [brainDir],
     );
     return rows[0]?.id;
