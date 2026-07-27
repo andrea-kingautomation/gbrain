@@ -180,18 +180,20 @@ export interface ProposeTakesResult {
   warnings: string[];
 }
 
-/** Narrow projection of `pages` — the only columns this phase reads. */
+/** Narrow projection of `pages`, including the eligibility metadata this phase reads. */
 interface ProposeTakesPageRow {
   slug: string;
   source_id: string;
+  type: string;
+  frontmatter: Record<string, unknown>;
   compiled_truth: string | null;
 }
 
 /**
  * Load proposal candidates with a narrow projection instead of
  * `engine.listPages` (`SELECT p.*`). The phase only reads slug, source_id
- * and compiled_truth — skipping timeline/frontmatter/title keeps large
- * toasted columns out of the hot path. Scope precedence mirrors
+ * type, frontmatter and compiled_truth. Timeline and title stay out of the hot
+ * path. Scope precedence mirrors
  * `sourceScopeOpts`: federated array (`sourceIds`) beats scalar
  * (`sourceId`); ordering matches `PAGE_SORT_SQL.updated_desc` with an id
  * tiebreak for determinism. (Takeover of PR #1979's projection by
@@ -213,7 +215,7 @@ async function listCandidatePages(
   }
   params.push(limit);
   return engine.executeRaw<ProposeTakesPageRow>(
-    `SELECT slug, source_id, compiled_truth
+    `SELECT slug, source_id, type, frontmatter, compiled_truth
        FROM pages
       WHERE ${where.join(' AND ')}
       ORDER BY updated_at DESC, id DESC
@@ -565,7 +567,10 @@ class ProposeTakesPhase extends BaseCyclePhase {
       const body = page.compiled_truth ?? '';
       if (body.trim().length === 0) continue;
       // Skip operational/log pages (e.g. extract_receipt) — not a knowledge source.
-      if (NON_KNOWLEDGE_PAGE_TYPES.has((page as { type?: string }).type ?? '')) continue;
+      if (NON_KNOWLEDGE_PAGE_TYPES.has(page.type)) continue;
+      // Dream outputs are derived from existing knowledge. Feeding them back into
+      // propose_takes recursively turns synthesis prose into apparent new beliefs.
+      if (page.frontmatter?.dream_generated === true || page.frontmatter?.dream_generated === 'true') continue;
       if (skipPagesWithFence && hasCompleteFence(body)) continue;
 
       const ch = contentHash(body);

@@ -56,10 +56,12 @@ function buildMockEngine(opts: {
     async executeRaw<T>(sql: string, params?: unknown[]): Promise<T[]> {
       captured.push({ sql, params: params ?? [] });
       // Narrow candidate-page projection (replaces listPages in the phase).
-      if (sql.includes('SELECT slug, source_id, compiled_truth')) {
+      if (sql.includes('SELECT slug, source_id, type, frontmatter, compiled_truth')) {
         return opts.pages.map((p) => ({
           slug: p.slug,
           source_id: p.source_id,
+          type: p.type,
+          frontmatter: p.frontmatter,
           compiled_truth: p.compiled_truth,
         })) as T[];
       }
@@ -88,15 +90,21 @@ function buildMockEngine(opts: {
   return { engine, captured };
 }
 
-function buildPage(opts: { slug: string; body: string; sourceId?: string }): Page {
+function buildPage(opts: {
+  slug: string;
+  body: string;
+  sourceId?: string;
+  type?: string;
+  frontmatter?: Record<string, unknown>;
+}): Page {
   return {
     id: 1,
     slug: opts.slug,
-    type: 'analysis',
+    type: opts.type ?? 'analysis',
     title: opts.slug,
     compiled_truth: opts.body,
     timeline: '',
-    frontmatter: {},
+    frontmatter: opts.frontmatter ?? {},
     source_id: opts.sourceId ?? 'default',
     created_at: new Date(),
     updated_at: new Date(),
@@ -456,6 +464,30 @@ New prose appended here.`;
     expect(extractorCalls).toBe(1);
   });
 
+  test('derived and operational pages are excluded before the extractor call', async () => {
+    const pages = [
+      buildPage({
+        slug: 'atoms/dream-output',
+        body: 'A generated synthesis must not recursively become a new take.',
+        frontmatter: { dream_generated: true },
+      }),
+      buildPage({
+        slug: 'extracts/run',
+        body: 'The extraction job processed one hundred pages.',
+        type: 'extract_receipt',
+      }),
+      buildPage({ slug: 'wiki/source-authored', body: 'This source-authored page is eligible.' }),
+    ];
+    const { engine } = buildMockEngine({ pages });
+    const seen: string[] = [];
+    const extractor: ProposeTakesExtractor = async ({ pagePath }) => {
+      seen.push(pagePath);
+      return [];
+    };
+    await runPhaseProposeTakes(buildCtx(engine), { extractor });
+    expect(seen).toEqual(['wiki/source-authored']);
+  });
+
   test('skipPagesWithFence:true bypasses pages that already have a complete fence', async () => {
     const pages = [
       buildPage({
@@ -630,7 +662,7 @@ New prose appended here.`;
 
     const pageSelect = captured.find(c => c.sql.includes('FROM pages'));
     expect(pageSelect).toBeDefined();
-    expect(pageSelect!.sql).toContain('SELECT slug, source_id, compiled_truth');
+    expect(pageSelect!.sql).toContain('SELECT slug, source_id, type, frontmatter, compiled_truth');
     expect(pageSelect!.sql).not.toContain('*');
     // Scalar sourceId scope from ctx binds as a plain equality param.
     expect(pageSelect!.params[0]).toBe('default');
