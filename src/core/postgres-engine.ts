@@ -1092,42 +1092,12 @@ export class PostgresEngine implements BrainEngine {
     });
   }
 
-  private async resolveCanonicalEntityWriteSource(
-    requestedSourceId: string,
-    slug: string,
-    pageType: string,
-  ): Promise<string> {
-    if (!['person', 'company', 'tool'].includes(pageType)) return requestedSourceId;
-    const sql = this.sql;
-    try {
-      const rows = await sql<{ source_id: string }[]>`
-        SELECT source_id
-        FROM pages
-        WHERE slug = ${slug}
-          AND source_id <> ${requestedSourceId}
-          AND deleted_at IS NULL
-          AND type = ANY(${['person', 'company', 'tool']}::text[])
-        ORDER BY CASE
-                   WHEN source_id = 'business-synthesis' THEN 0
-                   WHEN source_id = 'default' THEN 1
-                   ELSE 2
-                 END ASC,
-                 created_at ASC
-        LIMIT 1
-      `;
-      return rows[0]?.source_id ?? requestedSourceId;
-    } catch {
-      return requestedSourceId;
-    }
-  }
-
   async putPage(slug: string, page: PageInput, opts?: { sourceId?: string }): Promise<Page> {
     slug = validateSlug(slug);
     const sql = this.sql;
     const hash = page.content_hash || contentHash(page);
     const frontmatter = page.frontmatter || {};
-    const requestedSourceId = opts?.sourceId ?? 'default';
-    const sourceId = await this.resolveCanonicalEntityWriteSource(requestedSourceId, slug, page.type);
+    const sourceId = opts?.sourceId ?? 'default';
 
     // v0.18.0 Step 5+: source_id is now in the INSERT column list so multi-
     // source callers actually land on the (source_id, slug) row they intend.

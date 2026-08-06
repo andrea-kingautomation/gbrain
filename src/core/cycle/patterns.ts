@@ -220,7 +220,10 @@ export async function runPhasePatterns(
         timeoutMs: budgets.waitTimeoutMs,
         pollMs: 5 * 1000,
       });
-      outcome = final.status;
+      // KOA STOPGAP PATCH (patterns tool-effect completion)
+      // Minion terminal state is `completed`; normalize to the phase's
+      // historical `complete` vocabulary before applying effect checks.
+      outcome = final.status === 'completed' ? 'complete' : final.status;
     } catch (e) {
       if (e instanceof TimeoutError) {
         outcome = 'timeout';
@@ -260,6 +263,25 @@ export async function runPhasePatterns(
     // returned status:ok even when the subagent timed out (e.g. no
     // subagent-capable worker slot free for the whole wait window) and zero
     // pattern pages were written — a silent no-op for days.
+    if (
+      outcome === 'complete' &&
+      (writtenRefs.length === 0 || reverseWriteCount !== writtenRefs.length)
+    ) {
+      return {
+        phase: 'patterns',
+        status: 'fail',
+        duration_ms: 0,
+        summary: `pattern-detection subagent job ${job.id} completed conversationally without every required write effect`,
+        details,
+        error: makeError(
+          'InternalError',
+          'PATTERNS_TOOL_EFFECT_MISSING',
+          `subagent job ${job.id} completed with ${writtenRefs.length} tool write(s) and ${reverseWriteCount} reverse write(s)`,
+          'Check the brain_put_page execution receipt and the embedding or storage dependency before retrying.',
+        ),
+      };
+    }
+
     if (outcome !== 'complete') {
       if (writtenRefs.length === 0) {
         return {

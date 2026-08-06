@@ -53,15 +53,20 @@ export function quarantineFilterFragment(pageAlias: string): string {
  *  and for any future stale/orphan-chunk query that needs it. */
 export const QUARANTINE_FILTER_FRAGMENT = quarantineFilterFragment('p');
 
+// KOA STOPGAP PATCH (operator evidence quarantine contract)
 export interface QuarantineMarker {
-  /** Why the page was quarantined. The high-confidence junk reasons. */
-  reason: 'junk_pattern' | 'literal_substring';
-  /** Human-readable detail (which pattern/literal names fired). */
+  /** Why the page is hidden from retrieval. */
+  reason: 'junk_pattern' | 'literal_substring' | 'operator_evidence';
+  /** Human-readable detail for the quarantine decision. */
   detail: string;
   /** ISO 8601 timestamp at assessment time. */
   assessed_at: string;
   /** Body bytes at assessment, for operator visibility. */
   bytes?: number;
+  /** Stable repair identity for an evidence-backed operator quarantine. */
+  repair_id?: string;
+  /** Durable provenance reference for an evidence-backed operator quarantine. */
+  evidence_ref?: string;
 }
 
 /** Build the canonical quarantine marker. Spread onto frontmatter before
@@ -69,13 +74,15 @@ export interface QuarantineMarker {
 export function buildQuarantineMarker(
   reason: QuarantineMarker['reason'],
   detail: string,
-  extra: { bytes?: number; now?: Date } = {},
+  extra: { bytes?: number; now?: Date; repair_id?: string; evidence_ref?: string } = {},
 ): QuarantineMarker {
   return {
     reason,
     detail,
     assessed_at: (extra.now ?? new Date()).toISOString(),
     ...(extra.bytes !== undefined ? { bytes: extra.bytes } : {}),
+    ...(extra.repair_id !== undefined ? { repair_id: extra.repair_id } : {}),
+    ...(extra.evidence_ref !== undefined ? { evidence_ref: extra.evidence_ref } : {}),
   };
 }
 

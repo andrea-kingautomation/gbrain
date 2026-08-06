@@ -19,7 +19,8 @@ import {
 } from '../core/pace-mode.ts';
 import { tryAcquireDbLock, type DbLockHandle } from '../core/db-lock.ts';
 import { embedBackfillLockId } from '../core/embed-backfill-lock.ts';
-import { AITransientError } from '../core/ai/errors.ts';
+// KOA STOPGAP PATCH (permanent AI error short-circuit)
+import { AIConfigError, AITransientError } from '../core/ai/errors.ts';
 import { wrapChunkTextsForStoredMode } from '../core/embedding-context.ts';
 import { titleTierCorpusGeneration } from '../core/contextual-retrieval-service.ts';
 import type { Page } from '../core/types.ts';
@@ -325,6 +326,7 @@ export async function runEmbedCore(engine: BrainEngine, opts: EmbedOpts): Promis
       try {
         await embedPage(engine, s, !!opts.dryRun, result, opts.sourceId, opts.signal, opts.quiet);
       } catch (e: unknown) {
+        if (e instanceof AIConfigError) throw e;
         if (isAborted(opts.signal)) break; // shutdown, not a failure
         // #3037: a page-level error (not found, DB write) must not exit 0.
         // Chunk-level embed failures are counted inside embedPage; this
@@ -907,6 +909,7 @@ async function embedAll(
         serr(`\n  ${page.slug}: ${failed} chunk(s) failed to embed; embedded the other ${toEmbed.length - failed}`);
       }
     } catch (e: unknown) {
+      if (e instanceof AIConfigError) throw e;
       // #3037: count the darkened page so the run can't exit 0 (abort is a
       // shutdown, not a failure).
       if (!isAborted(signal)) recordFailure(result, toEmbed.length, page.slug, e);
@@ -931,13 +934,18 @@ async function embedAll(
   // and stderr log (no rethrow), so we don't need failures[] here and
   // omitting onError means the default 'continue' policy applies cleanly
   // even though no errors should reach the pool's catch.
-  await runSlidingPool({
+  const pagePoolResult = await runSlidingPool({
     items: pages,
     workers: CONCURRENCY,
     ...(signal && { signal }), // #1737: pool stops claiming pages once aborted
     onItem: (page) => embedOnePage(page),
+    onError: (err) => err instanceof AIConfigError ? 'abort' : 'continue',
     failureLabel: (page) => page.slug,
   });
+  const permanentPageFailure = pagePoolResult.failures.find(
+    failure => failure.error instanceof AIConfigError,
+  );
+  if (permanentPageFailure) throw permanentPageFailure.error;
 
   // Stdout summary preserved for scripts/tests that grep for counts.
   if (!staleOpts?.quiet) {
@@ -1281,6 +1289,7 @@ async function embedAllStale(
           // Budget/abort-fired cancellations are expected on the way out; don't
           // spam per-page "Error embedding" lines when we're shutting down.
           if (effectiveSignal.aborted) return;
+          if (e instanceof AIConfigError) throw e;
           recordFailure(result, stale.length, slug, e);
           serr(`\n  Error embedding ${slug}: ${e instanceof Error ? e.message : e}`);
         }
@@ -1307,13 +1316,18 @@ async function embedAllStale(
       // `!budgetSignal.aborted` gate) AND threads abort into in-flight
       // onItem via the local-abort composition for D13. embedOneKey
       // already handles its own per-key errors via try/catch + stderr.
-      await runSlidingPool({
+      const stalePoolResult = await runSlidingPool({
         items: keys,
         workers: CONCURRENCY,
         signal: effectiveSignal,
         onItem: (key) => embedOneKey(key),
+        onError: (err) => err instanceof AIConfigError ? 'abort' : 'continue',
         failureLabel: (key) => key,
       });
+      const permanentStaleFailure = stalePoolResult.failures.find(
+        failure => failure.error instanceof AIConfigError,
+      );
+      if (permanentStaleFailure) throw permanentStaleFailure.error;
 
       // E-4: extend the work budget by any paced-sleep time accrued this batch.
       rearmBudgetForPacing();

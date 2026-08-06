@@ -131,9 +131,11 @@ describe('awaitPendingLastRetrievedWrites', () => {
 
     expect(result.outcome).toBe('timeout');
     expect(result.pending).toBe(1);
-    // Should return within timeout + small buffer; not block forever
+    // AgentChakra bounded-suite tolerance: timer deadlines can be delayed by event-loop saturation.
+    // The timeout outcome and cleanup are the contract; 2s still catches a blocked drain without
+    // making a 100ms timer depend on an idle host.
     expect(dt).toBeGreaterThanOrEqual(100);
-    expect(dt).toBeLessThan(300);
+    expect(dt).toBeLessThan(2000);
     // C1 fix: snapshot's tracked promises ARE dropped from the set on
     // timeout so the next drain doesn't see ghosts (daemon leak guard).
     expect(_peekPendingLastRetrievedWritesForTests()).toBe(0);

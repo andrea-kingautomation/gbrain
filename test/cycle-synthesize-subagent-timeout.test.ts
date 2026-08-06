@@ -64,7 +64,9 @@ describe('runPhaseSynthesize subagent timeout config', () => {
         dryRun: false,
       });
 
-      expect(result.status).toBe('ok');
+      // AgentChakra verifies configured subagent timeout without weakening synthesis effect completion.
+      expect(result.status).toBe('fail');
+      expect(result.error?.code).toBe('SYNTH_TOOL_EFFECT_MISSING');
 
       const jobs = await engine.executeRaw<{ timeout_ms: string | number | null }>(
         `SELECT timeout_ms

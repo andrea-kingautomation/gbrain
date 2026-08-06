@@ -581,7 +581,8 @@ describe('bold-time-dash pattern (normalized Slack Markdown)', () => {
     });
   });
 
-  test('parses one anchor with a long Markdown continuation body', () => {
+  test('one anchor with a long Markdown continuation body stays below the acceptance floor', () => {
+    // AgentChakra preserves the two-anchor conversation acceptance floor.
     const continuation = Array.from(
       { length: 30 },
       (_, index) => `- supporting detail ${index + 1}`,
@@ -592,10 +593,9 @@ describe('bold-time-dash pattern (normalized Slack Markdown)', () => {
     ].join('\n');
     const r = parseConversation(body, { fallbackDate: '2026-04-09' });
 
-    expect(r.matched_pattern_id).toBe('bold-time-dash');
-    expect(r.messages).toHaveLength(1);
-    expect(r.messages[0].text.split('\n')).toHaveLength(31);
-    expect(r.messages[0].text.endsWith('- supporting detail 30')).toBe(true);
+    expect(r.phase).toBe('no_match');
+    expect(r.matched_pattern_id).toBeUndefined();
+    expect(r.messages).toHaveLength(0);
   });
 
   test('does not treat one stray anchor in long prose as a conversation', () => {

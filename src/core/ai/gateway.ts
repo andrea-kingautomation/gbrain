@@ -379,9 +379,22 @@ export function applyResolveAuth(
       recipe.setup_hint,
     );
   }
-  const defaults = recipe.resolveDefaultHeaders
+  const recipeDefaults = recipe.resolveDefaultHeaders
     ? recipe.resolveDefaultHeaders(cfg.env)
     : recipe.default_headers;
+  // KOA STOPGAP PATCH (AI request correlation)
+  // Re-apply after every GBrain upgrade. Background runners provide one
+  // transport-safe logical run id through AI_ROUTE_REQUEST_ID.
+  const koaRequestId = String(cfg.env.AI_ROUTE_REQUEST_ID || '').trim();
+  const combinedDefaults = {
+    ...(recipeDefaults ?? {}),
+    ...(/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(koaRequestId)
+      ? { 'X-Request-Id': koaRequestId }
+      : {}),
+  };
+  const defaults = Object.keys(combinedDefaults).length > 0
+    ? combinedDefaults
+    : undefined;
 
   // v0.37.6.0 — defaults MUST NOT shadow the resolved auth header. SDK applies
   // headers after apiKey, so an `Authorization` entry in defaults would replace
@@ -3891,6 +3904,11 @@ export async function toolLoop(opts: ToolLoopOpts): Promise<ToolLoopResult> {
           isError: true,
         });
         opts.onHeartbeat?.('tool_failed', { turn_idx: turnIdx, tool_name: call.toolName, error: errMsg });
+        // KOA STOPGAP PATCH (permanent AI error short-circuit)
+        if (err instanceof AIConfigError) {
+          stopReason = 'unrecoverable';
+          throw err;
+        }
       }
     }
 

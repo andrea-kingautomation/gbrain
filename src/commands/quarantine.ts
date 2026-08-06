@@ -4,13 +4,15 @@
  *   gbrain quarantine list [--json] [--include-flagged]
  *   gbrain quarantine clear <slug> [--force] [--no-embed] [--json]
  *   gbrain quarantine scan [--limit N] [--apply] [--no-embed] [--json]
+ *   gbrain quarantine mark <slug> --source-id <id> --repair-id <id>
+ *     --evidence-ref <ref> --detail <text> [--json]
  *
  * `quarantine` (hidden) marks high-confidence junk; `content_flag` (warned,
  * still searchable) marks fuzzy markup-heavy / oversize pages. See
  * src/core/quarantine.ts for the marker contract.
  */
 import type { BrainEngine } from '../core/engine.ts';
-import { isQuarantined, getContentFlag, QUARANTINE_KEY, CONTENT_FLAG_KEY } from '../core/quarantine.ts';
+import { buildQuarantineMarker, isQuarantined, getContentFlag, QUARANTINE_KEY, CONTENT_FLAG_KEY } from '../core/quarantine.ts';
 import { serializePageToMarkdown, serializeMarkdown } from '../core/markdown.ts';
 import { importFromContent } from '../core/import-file.ts';
 import type { PageType } from '../core/types.ts';
@@ -253,6 +255,85 @@ async function runScan(engine: BrainEngine, args: string[]): Promise<void> {
   }
 }
 
+// KOA STOPGAP PATCH (evidence-preserving quarantine)
+function quarantineFlagValue(args: string[], name: string): string {
+  const index = args.indexOf(name);
+  const value = index >= 0 ? args[index + 1] : undefined;
+  if (!value || value.startsWith('--')) {
+    throw new Error(`Missing required ${name} value.`);
+  }
+  return value;
+}
+
+async function runMark(engine: BrainEngine, args: string[]): Promise<void> {
+  const json = args.includes('--json');
+  const slug = args[0] && !args[0].startsWith('--') ? args[0] : '';
+  if (!slug) {
+    console.error('Usage: gbrain quarantine mark <slug> --source-id <id> --repair-id <id> --evidence-ref <ref> --detail <text> [--json]');
+    process.exit(2);
+  }
+  const sourceId = quarantineFlagValue(args, '--source-id');
+  const repairId = quarantineFlagValue(args, '--repair-id');
+  const evidenceRef = quarantineFlagValue(args, '--evidence-ref');
+  const detail = quarantineFlagValue(args, '--detail');
+  const current = await engine.getPage(slug, { sourceId, includeDeleted: true });
+  if (!current || current.deleted_at) {
+    console.error(`No active page found for slug "${slug}" in source "${sourceId}".`);
+    process.exit(2);
+  }
+  const currentMarker = ((current.frontmatter ?? {}) as Record<string, unknown>)[QUARANTINE_KEY];
+  if (currentMarker !== undefined && currentMarker !== null) {
+    const result = { schema_version: 1, slug, source_id: sourceId, changed: false, marker: currentMarker };
+    console.log(json ? JSON.stringify(result, null, 2) : `Already quarantined "${slug}" in source "${sourceId}".`);
+    return;
+  }
+  const quarantineMarker = {
+    schema_version: 1,
+    ...buildQuarantineMarker('operator_evidence', detail, {
+      repair_id: repairId,
+      evidence_ref: evidenceRef,
+    }),
+  };
+  const rows = await engine.executeRaw<{ marker: Record<string, unknown> }>(
+    `WITH target AS (
+       SELECT id, compiled_truth, frontmatter
+         FROM pages
+        WHERE source_id = $1 AND slug = $2 AND deleted_at IS NULL
+     ), snapshot AS (
+       INSERT INTO page_versions (page_id, compiled_truth, frontmatter)
+       SELECT id, compiled_truth, frontmatter
+         FROM target
+        WHERE NOT (COALESCE(frontmatter, '{}'::jsonb) ? 'quarantine')
+       RETURNING page_id
+     ), updated AS (
+       UPDATE pages AS p
+          SET frontmatter = COALESCE(p.frontmatter, '{}'::jsonb)
+                            || jsonb_build_object('quarantine', $3::jsonb),
+              updated_at = now()
+         FROM snapshot AS s
+        WHERE p.id = s.page_id
+       RETURNING p.frontmatter->'quarantine' AS marker
+     )
+     SELECT marker FROM updated`,
+    [sourceId, slug, JSON.stringify(quarantineMarker)],
+  );
+  const changed = rows.length === 1;
+  const result = {
+    schema_version: 1,
+    slug,
+    source_id: sourceId,
+    changed,
+    marker: rows[0]?.marker ?? quarantineMarker,
+  };
+  console.log(
+    json
+      ? JSON.stringify(result, null, 2)
+      : changed
+        ? `Quarantined "${slug}" in source "${sourceId}" with repair "${repairId}".`
+        : `Already quarantined "${slug}" in source "${sourceId}".`,
+  );
+}
+
 export async function runQuarantine(engine: BrainEngine, args: string[]): Promise<void> {
   const sub = args[0];
   const rest = args.slice(1);
@@ -263,11 +344,14 @@ export async function runQuarantine(engine: BrainEngine, args: string[]): Promis
       return runClear(engine, rest);
     case 'scan':
       return runScan(engine, rest);
+    case 'mark':
+      return runMark(engine, rest);
     default:
-      console.error('Usage: gbrain quarantine <list|clear|scan> [...]');
+      console.error('Usage: gbrain quarantine <list|clear|scan|mark> [...]');
       console.error('  list  [--json] [--include-flagged]');
       console.error('  clear <slug> [--force] [--no-embed] [--json]');
       console.error('  scan  [--limit N] [--apply] [--no-embed] [--json]');
+      console.error('  mark  <slug> --source-id <id> --repair-id <id> --evidence-ref <ref> --detail <text> [--json]');
       process.exit(2);
   }
 }

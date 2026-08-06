@@ -315,6 +315,10 @@ async function llmCategory(title, body, tags) {
       headers: {
         "Content-Type": "application/json",
         Authorization: `Bearer ${OMNIROUTE_KEY}`,
+        // KOA STOPGAP PATCH (AI request correlation)
+        ...(/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(
+          String(process.env.AI_ROUTE_REQUEST_ID || "").trim(),
+        ) ? { "X-Request-Id": String(process.env.AI_ROUTE_REQUEST_ID).trim() } : {}),
       },
       body: JSON.stringify({
         model: CATEGORIZE_MODEL,

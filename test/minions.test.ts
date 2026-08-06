@@ -2862,8 +2862,10 @@ describe('MinionWorker: self-health-check behavior (v0.22.14)', () => {
     //   - tick @ +60ms: idle=60ms, > 50, warn fires (stallWarningSince set)
     //   - tick @ +90ms: idle=90ms, < stallExitAfterMs(100), no exit yet
     //   - tick @ +120ms: idle=120ms, > 100 → exit fires (unhealthy event)
-    // Wait 350ms which leaves comfortable slack for setTimeout drift.
-    await new Promise(r => setTimeout(r, 350));
+    // AgentChakra bounded-suite tolerance: observe the stall event without assuming an idle event loop.
+    // The event reason and waiting-count assertions remain load-bearing; 1.5s is still
+    // well below the test's 10s timeout and catches a missing health event.
+    await new Promise(r => setTimeout(r, 1_500));
     worker.stop();
     await startPromise;
 

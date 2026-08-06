@@ -4,18 +4,19 @@
 // path_pattern; back-compat with empty pack falls back to gbrain-base
 // hardcoded behavior; legacy inferTypeFromPack signature unchanged.
 
+// AgentChakra preserves the neutral import fallback across schema-pack inference tests.
 import { describe, expect, it } from 'bun:test';
 import { inferTypeAndSubtypeFromPack, inferTypeFromPack } from '../src/core/markdown.ts';
 
 describe('inferTypeAndSubtypeFromPack', () => {
-  it('returns concept for missing path', () => {
-    expect(inferTypeAndSubtypeFromPack(undefined, { page_types: [{ name: 'media', path_prefixes: ['/media/'] }] })).toEqual({ type: 'concept' });
+  it('returns neutral note for missing path', () => {
+    expect(inferTypeAndSubtypeFromPack(undefined, { page_types: [{ name: 'media', path_prefixes: ['/media/'] }] })).toEqual({ type: 'note' });
   });
 
-  it('returns concept fallback when no prefix matches', () => {
+  it('returns neutral note fallback when no prefix matches', () => {
     expect(inferTypeAndSubtypeFromPack('foo/bar.md', {
       page_types: [{ name: 'media', path_prefixes: ['/media/'] }],
-    })).toEqual({ type: 'concept' });
+    })).toEqual({ type: 'note' });
   });
 
   it('matches prefix → returns canonical type', () => {

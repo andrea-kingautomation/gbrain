@@ -674,10 +674,14 @@ export async function runPhaseSynthesize(
           timeoutMs: config.subagentWaitTimeoutMs,
           pollMs: 5 * 1000,
         });
+        // KOA STOPGAP PATCH (synthesis tool-effect completion)
         childOutcomes.push({ jobId, status: job.status });
       } catch (e) {
         if (e instanceof TimeoutError) {
           childOutcomes.push({ jobId, status: 'timeout' });
+          // The wait deadline is also the parent's spend and write boundary.
+          // Cancel the child so it cannot continue after this phase gave up.
+          try { await queue.cancelJob(jobId); } catch { /* best-effort */ }
         } else {
           throw e;
         }
@@ -698,6 +702,18 @@ export async function runPhaseSynthesize(
     // source (children write there via SubagentHandlerData.source_id).
     const cycleSourceId = opts.sourceId ?? 'default';
     const writtenRefs = await collectChildPutPageSlugs(engine, childIds, chunkInfo, cycleSourceId, jobRawSource);
+    const toolEffectRows = await engine.executeRaw<{ job_id: number }>(
+      `SELECT DISTINCT job_id
+         FROM subagent_tool_executions
+        WHERE job_id = ANY($1::int[])
+          AND tool_name = 'brain_put_page'
+          AND status = 'complete'`,
+      [childIds],
+    );
+    const effectJobIds = new Set(toolEffectRows.map(row => row.job_id));
+    const missingEffectChildIds = childOutcomes
+      .filter(child => child.status === 'completed' && !effectJobIds.has(child.jobId))
+      .map(child => child.jobId);
 
     const summaryDate = opts.date ?? today();
 
@@ -719,11 +735,52 @@ export async function runPhaseSynthesize(
       await writeSummaryPage(engine, opts.brainDir, summarySlug, summaryDate, writtenSlugs, childOutcomes, cycleSourceId);
     }
 
-    // Write completion timestamp ON SUCCESS only.
-    await engine.setConfig('dream.synthesize.last_completion_ts', new Date().toISOString());
-
     const ms = Date.now() - start;
     const submittedTranscripts = worthProcessing.length - skipReports.length;
+    const effectDetails = {
+      transcripts_discovered: transcripts.length,
+      transcripts_processed: submittedTranscripts,
+      pages_written: writtenSlugs.length,
+      reverse_write_count: reverseWriteCount,
+      child_outcomes: childOutcomes,
+      children_submitted: childIds.length,
+      missing_effect_child_ids: missingEffectChildIds,
+    };
+    if (
+      submittedTranscripts > 0 &&
+      (
+        writtenRefs.length === 0 ||
+        reverseWriteCount !== writtenRefs.length ||
+        missingEffectChildIds.length > 0
+      )
+    ) {
+      return {
+        phase: 'synthesize',
+        status: 'fail',
+        duration_ms: 0,
+        summary: 'synthesis children ended without every required tool and reverse-write effect',
+        details: effectDetails,
+        error: makeError(
+          'InternalError',
+          'SYNTH_TOOL_EFFECT_MISSING',
+          `${missingEffectChildIds.length} completed child job(s) lacked brain_put_page, with ${writtenRefs.length} tool write(s) and ${reverseWriteCount} reverse write(s)`,
+          'Check child tool-execution receipts and the embedding or storage dependency before retrying.',
+        ),
+      };
+    }
+    const incompleteChildren = childOutcomes.filter(child => child.status !== 'completed');
+    if (incompleteChildren.length > 0) {
+      return {
+        phase: 'synthesize',
+        status: 'warn',
+        duration_ms: 0,
+        summary: `${writtenSlugs.length} page(s) written, but ${incompleteChildren.length} child job(s) failed or timed out`,
+        details: effectDetails,
+      };
+    }
+
+    // Write completion timestamp only after every required effect is verified.
+    await engine.setConfig('dream.synthesize.last_completion_ts', new Date().toISOString());
     return ok(`${submittedTranscripts} transcript(s) synthesized in ${(ms / 1000).toFixed(1)}s`, {
       transcripts_discovered: transcripts.length,
       transcripts_processed: submittedTranscripts,

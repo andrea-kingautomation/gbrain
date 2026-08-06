@@ -114,7 +114,7 @@ async function readProvenance(slug: string): Promise<{
 
 
 describe('put_page entity source canonicalization', () => {
-  test('direct engine entity write updates existing canonical source instead of creating a source fork', async () => {
+  test('direct engine entity writes preserve an explicit source boundary', async () => {
     await engine.executeRaw(
       "INSERT INTO sources (id, name) VALUES ('business-synthesis', 'Business Synthesis'), ('koa-conversations', 'KoA Conversations') ON CONFLICT (id) DO NOTHING",
       [],
@@ -127,7 +127,7 @@ describe('put_page entity source canonicalization', () => {
 
     await engine.putPage(
       'people/direct-example',
-      { type: 'person', title: 'Direct Example', compiled_truth: 'updated direct body', timeline: '', frontmatter: {} },
+      { type: 'person', title: 'Direct Example', compiled_truth: 'source-specific body', timeline: '', frontmatter: {} },
       { sourceId: 'koa-conversations' },
     );
 
@@ -135,9 +135,10 @@ describe('put_page entity source canonicalization', () => {
       "SELECT source_id, compiled_truth FROM pages WHERE slug = 'people/direct-example' ORDER BY source_id",
       [],
     );
-    expect(rows).toHaveLength(1);
-    expect(rows[0]!.source_id).toBe('business-synthesis');
-    expect(rows[0]!.compiled_truth).toContain('updated direct body');
+    expect(rows).toHaveLength(2);
+    expect(rows.map((row) => row.source_id)).toEqual(['business-synthesis', 'koa-conversations']);
+    expect(rows[0]!.compiled_truth).toContain('canonical body');
+    expect(rows[1]!.compiled_truth).toContain('source-specific body');
   });
 
   test('same-slug entity write updates existing canonical source instead of recreating caller-source duplicate', async () => {

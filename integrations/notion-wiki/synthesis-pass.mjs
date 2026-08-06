@@ -120,7 +120,14 @@ Return the JSON object now.`;
 async function callOmni(prompt) {
   const res = await fetch(OMNI_URL, {
     method: "POST",
-    headers: { "Content-Type": "application/json", Authorization: `Bearer ${omniKey()}` },
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${omniKey()}`,
+      // KOA STOPGAP PATCH (AI request correlation)
+      ...(/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(
+        String(process.env.AI_ROUTE_REQUEST_ID || "").trim(),
+      ) ? { "X-Request-Id": String(process.env.AI_ROUTE_REQUEST_ID).trim() } : {}),
+    },
     body: JSON.stringify({ model: OMNI_MODEL, messages: [{ role: "user", content: prompt }], temperature: 0.4, stream: false, max_tokens: 8000 }),
   });
   const raw = await res.text();

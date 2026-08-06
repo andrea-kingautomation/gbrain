@@ -52,6 +52,8 @@ import { resolveAnthropicKey } from '../../ai/anthropic-key.ts';
 import { buildSystemPrompt, DEFAULT_SUBAGENT_SYSTEM } from '../system-prompt.ts';
 import { toolLoop as gatewayToolLoop } from '../../ai/gateway.ts';
 import type { ChatToolDef, ChatMessage, ChatBlock, ChatResult, ToolHandler } from '../../ai/gateway.ts';
+// KOA STOPGAP PATCH (permanent AI error short-circuit)
+import { AIConfigError } from '../../ai/errors.ts';
 import { classifyCapabilities } from '../../ai/capabilities.ts';
 import { randomUUIDv7 } from 'bun';
 
@@ -436,6 +438,9 @@ export function makeSubagentHandler(deps: SubagentDeps) {
           } catch (e) {
             const errText = e instanceof Error ? (e.stack ?? e.message) : String(e);
             await persistToolExecFailed(engine, ctx.id, last.message_idx, use.id, use.name, use.input, errText);
+            if (e instanceof AIConfigError) {
+              throw new UnrecoverableError(`ai_config: ${e.message}`);
+            }
             synthesizedResults.push({
               type: 'tool_result', tool_use_id: use.id,
               content: errText, is_error: true,
@@ -770,6 +775,9 @@ export function makeSubagentHandler(deps: SubagentDeps) {
             ms_elapsed: Date.now() - toolStart,
             error: errText,
           });
+          if (e instanceof AIConfigError) {
+            throw new UnrecoverableError(`ai_config: ${e.message}`);
+          }
           toolResults.push({
             type: 'tool_result',
             tool_use_id: use.id,
@@ -968,7 +976,9 @@ async function runSubagentViaGateway(args: GatewayRunArgs): Promise<SubagentResu
   };
 
   // Run the loop.
-  const result = await gatewayToolLoop({
+  let result: Awaited<ReturnType<typeof gatewayToolLoop>>;
+  try {
+    result = await gatewayToolLoop({
     model,
     system: systemPrompt,
     initialMessages,
@@ -1070,7 +1080,13 @@ async function runSubagentViaGateway(args: GatewayRunArgs): Promise<SubagentResu
       });
     },
     onHeartbeat: heartbeat,
-  });
+    });
+  } catch (err) {
+    if (err instanceof AIConfigError) {
+      throw new UnrecoverableError(`ai_config: ${err.message}`);
+    }
+    throw err;
+  }
 
   // Map gateway stop reason to SubagentStopReason. SubagentStopReason has
   // {end_turn, max_turns, refusal, error}; aborted maps to error.
@@ -1214,6 +1230,9 @@ async function reconcileGatewayReplay(args: ReconcileArgs): Promise<ReconcileRes
       } catch (e) {
         const errText = e instanceof Error ? (e.stack ?? e.message) : String(e);
         await persistToolExecFailed(engine, jobId, msg.message_idx, call.toolCallId, call.toolName, call.input, errText);
+        if (e instanceof AIConfigError) {
+          throw new UnrecoverableError(`ai_config: ${e.message}`);
+        }
         results.push({ type: 'tool-result', toolCallId: call.toolCallId, toolName: call.toolName, output: errText, isError: true });
       }
     }
