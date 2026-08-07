@@ -745,6 +745,7 @@ export async function runPhaseSynthesize(
       child_outcomes: childOutcomes,
       children_submitted: childIds.length,
       missing_effect_child_ids: missingEffectChildIds,
+      skips: skipReports,
     };
     if (
       submittedTranscripts > 0 &&

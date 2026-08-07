@@ -40,12 +40,21 @@ mock.module('../../src/core/embedding.ts', () => ({
   embedQuery: async () => new Float32Array(1536),
   embedBatch: async (texts: string[]) => texts.map(() => new Float32Array(1536)),
   embedMultimodal: async () => [],
+  embedMultimodalSafe: async () => [],
+  embedQueryMultimodal: async () => new Float32Array(1536),
+  embedQueryMultimodalImage: async () => new Float32Array(1536),
   getEmbeddingModelName: () => 'text-embedding-3-large',
   getEmbeddingDimensions: () => 1536,
   EMBEDDING_MODEL: 'text-embedding-3-large',
   EMBEDDING_DIMENSIONS: 1536,
   EMBEDDING_COST_PER_1K_TOKENS: 0.00013,
   estimateEmbeddingCostUsd: (tokens: number) => (tokens / 1000) * 0.00013,
+  currentEmbeddingPricePerMTok: () => 0.13,
+  shouldBlockSync: () => false,
+  willEmbedSynchronously: (opts: { v2Enabled: boolean; serialFlag: boolean; noEmbed: boolean }) => {
+    const effectiveNoEmbed = opts.v2Enabled && !opts.serialFlag && !opts.noEmbed ? true : opts.noEmbed;
+    return effectiveNoEmbed ? 'deferred' : 'inline';
+  },
   // v0.41.31: embed phase reads the current signature to stamp provenance.
   currentEmbeddingSignature: () => 'text-embedding-3-large:1536',
 }));

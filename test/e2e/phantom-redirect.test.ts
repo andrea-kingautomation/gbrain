@@ -255,7 +255,7 @@ describeMaybe('phantom-redirect E2E (Postgres)', () => {
         `SELECT COUNT(*)::text AS ct FROM facts
          WHERE source_id='default'
            AND embedding IS NOT NULL
-           AND pg_typeof(embedding)::text != 'vector'`,
+           AND pg_typeof(embedding)::text NOT IN ('vector', 'halfvec')`,
       );
       expect(parseInt(stringShaped[0].ct, 10)).toBe(0);
       expect(rows.length).toBeGreaterThan(0);

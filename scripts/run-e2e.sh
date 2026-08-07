@@ -148,6 +148,7 @@ fail_list=()
 total_pass=0
 total_fail=0
 
+file_idx=0
 for f in "${files[@]}"; do
   name=$(basename "$f")
   echo ""
@@ -175,7 +176,13 @@ for f in "${files[@]}"; do
   else
     TIMEOUT_CMD=""
   fi
-  if output=$($TIMEOUT_CMD bun test --timeout=60000 "$f" 2>&1); then
+  # Per-file HOME isolation: each E2E file gets a fresh config namespace.
+  # This prevents one file's schema_pack / gateway / source config writes from
+  # changing later files while preserving the suite-level real-user breach check.
+  FILE_HOME="$E2E_TMP_HOME/file-$file_idx"
+  file_idx=$((file_idx + 1))
+  mkdir -p "$FILE_HOME/.gbrain"
+  if output=$(HOME="$FILE_HOME" GBRAIN_HOME="$FILE_HOME" $TIMEOUT_CMD bun test --timeout=60000 "$f" 2>&1); then
     pass_files=$((pass_files + 1))
     # Extract pass/fail counts from bun's summary (e.g., "123 pass")
     p=$(echo "$output" | grep -oE '[0-9]+ pass' | tail -1 | grep -oE '[0-9]+' || echo 0)

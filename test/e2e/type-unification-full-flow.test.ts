@@ -33,6 +33,7 @@ afterAll(async () => {
 
 beforeEach(async () => {
   await resetPgliteState(engine);
+  await engine.setConfig('schema_pack', 'gbrain-base');
   _resetPackCacheForTests();
 });
 
