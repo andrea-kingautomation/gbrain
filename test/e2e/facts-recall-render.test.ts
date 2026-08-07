@@ -33,7 +33,7 @@ d('gbrain recall --today (Postgres)', () => {
       return true;
     }) as typeof process.stdout.write;
     try {
-      await runRecall(engine, ['--today']);
+      await runRecall(engine, ['--today', '--source', 'default']);
     } finally {
       process.stdout.write = origWrite;
     }
