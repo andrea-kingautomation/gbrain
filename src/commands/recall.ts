@@ -64,7 +64,7 @@ interface ParsedFlags {
   includeExpired: boolean;
   asContext: boolean;
   json: boolean;
-  source: string;
+  source: string | null;
   limit: number;
   // v0.32
   sinceLastRun: boolean;
@@ -92,7 +92,7 @@ function parseFlags(args: string[]): ParsedFlags {
     includeExpired: false,
     asContext: false,
     json: false,
-    source: 'default',
+    source: null,
     limit: 50,
     sinceLastRun: false,
     pending: false,
@@ -173,7 +173,7 @@ function validateAndNormalizeFlags(flags: ParsedFlags): void {
       flags.watchSeconds = WATCH_MIN;
     }
   }
-  if (flags.source !== 'default' && !SOURCE_ID_RE.test(flags.source)) {
+  if (flags.source !== null && !SOURCE_ID_RE.test(flags.source)) {
     process.stderr.write(`Error: --source value "${flags.source}" must match [a-z0-9-]{1,32} (kebab-case).\n`);
     process.exit(2);
   }
@@ -181,11 +181,11 @@ function validateAndNormalizeFlags(flags: ParsedFlags): void {
 
 async function resolveSourceForRecall(
   engine: BrainEngine,
-  flagValue: string,
+  flagValue: string | null,
   thinClient: boolean,
 ): Promise<string> {
   if (thinClient) {
-    if (flagValue !== 'default') return flagValue;
+    if (flagValue !== null) return flagValue;
     const env = process.env.GBRAIN_SOURCE;
     if (env && env.length > 0 && SOURCE_ID_RE.test(env)) return env;
     return 'default';
@@ -198,12 +198,15 @@ async function resolveSourceForRecall(
   // empty" behavior so existing tests + scripts keep working while
   // recall still benefits from the env/dotfile resolution chain.
   try {
-    return await resolveSourceId(engine, flagValue !== 'default' ? flagValue : null);
+    // An explicit `--source default` is still explicit. Pass the literal
+    // value through so cwd/dotfile/config defaults cannot override the caller;
+    // a missing flag remains null and continues through the resolver tiers.
+    return await resolveSourceId(engine, flagValue);
   } catch (e) {
     process.stderr.write(
-      `[recall] source not registered: ${flagValue}. Falling back to literal value.\n`,
+      `[recall] source not registered: ${flagValue ?? 'default'}. Falling back to literal value.\n`,
     );
-    return flagValue;
+    return flagValue ?? 'default';
   }
 }
 

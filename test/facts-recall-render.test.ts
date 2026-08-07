@@ -40,6 +40,24 @@ describe('gbrain recall --today', () => {
     process.stdout.write = origWrite;
   });
 
+  test('explicit --source default overrides a configured non-default source', async () => {
+    await engine.executeRaw(
+      `INSERT INTO sources (id, name) VALUES ('recall-other', 'recall-other') ON CONFLICT DO NOTHING`,
+    );
+    await engine.setConfig('sources.default', 'recall-other');
+    await engine.insertFact(
+      { fact: 'explicit-default-fact', kind: 'fact', entity_slug: 'explicit-default', source: 'test' },
+      { source_id: 'default' },
+    );
+    try {
+      await runRecall(engine, ['--today', '--source', 'default']);
+    } finally {
+      await engine.setConfig('sources.default', 'default');
+    }
+    expect(captured).toContain('explicit-default-fact');
+    process.stdout.write = origWrite;
+  });
+
   test('kind icons appear in the rendered output', async () => {
     // Reset capture
     captured = '';
