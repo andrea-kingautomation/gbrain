@@ -96,7 +96,7 @@ describe.skipIf(skip)('schema drift: PGLite ↔ Postgres post-initSchema parity 
     const url = new URL(DATABASE_URL!);
     const dbName = url.pathname.replace(/^\//, '');
     const host = url.hostname;
-    const isLocalhost = host === 'localhost' || host === '127.0.0.1' || host.endsWith('.local');
+    const isLocalhost = host === '' || host === 'localhost' || host === '127.0.0.1' || host.endsWith('.local');
     // db-name pattern is the floor: gbrain_test, *_test, test_*, *_e2e.
     // Required REGARDLESS of any override — a production db named "production_data"
     // cannot be reset even with GBRAIN_TEST_DB=1.
