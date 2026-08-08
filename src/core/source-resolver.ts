@@ -121,7 +121,7 @@ export async function resolveSourceId(
   //    Uses longest-prefix match so nested-path configurations (e.g.
   //    gstack at ~/gstack + plans at ~/gstack/plans) pick the deepest.
   const registered = await engine.executeRaw<{ id: string; local_path: string }>(
-    `SELECT id, local_path FROM sources WHERE local_path IS NOT NULL`,
+    `SELECT id, local_path FROM sources WHERE local_path IS NOT NULL AND archived IS NOT TRUE`,
   );
   // realpath BOTH sides (not bare resolve) so a symlinked CWD can't forge a
   // prefix match against a registered local_path it doesn't really live under
@@ -365,7 +365,7 @@ export async function resolveSourceWithTier(
 
   // 4. Registered source whose local_path contains CWD.
   const registered = await engine.executeRaw<{ id: string; local_path: string }>(
-    `SELECT id, local_path FROM sources WHERE local_path IS NOT NULL`,
+    `SELECT id, local_path FROM sources WHERE local_path IS NOT NULL AND archived IS NOT TRUE`,
   );
   // realpath both sides — see the matching block in resolveSourceId (codex #9).
   const cwdResolved = realpathOrResolve(cwd);

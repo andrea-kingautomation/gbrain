@@ -158,7 +158,7 @@ async function listSources(engine: BrainEngine, sourceId?: string): Promise<Sour
   if (sourceId) {
     return engine.executeRaw<SourceRow>(`SELECT id, local_path FROM sources WHERE id = $1`, [sourceId]);
   }
-  return engine.executeRaw<SourceRow>(`SELECT id, local_path FROM sources WHERE local_path IS NOT NULL ORDER BY id`);
+  return engine.executeRaw<SourceRow>(`SELECT id, local_path FROM sources WHERE local_path IS NOT NULL AND archived IS NOT TRUE ORDER BY id`);
 }
 
 function isGitRepo(dir: string): boolean {

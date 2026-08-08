@@ -254,11 +254,11 @@ describe('scanBrainSources (PGLite)', () => {
     rmSync(tmp, { recursive: true, force: true });
   });
 
-  async function registerSource(id: string, path: string) {
+  async function registerSource(id: string, path: string, archived = false) {
     await engine.executeRaw(
-      `INSERT INTO sources (id, name, local_path) VALUES ($1, $1, $2)
-         ON CONFLICT (id) DO UPDATE SET local_path = EXCLUDED.local_path`,
-      [id, path],
+      `INSERT INTO sources (id, name, local_path, archived) VALUES ($1, $1, $2, $3)
+         ON CONFLICT (id) DO UPDATE SET local_path = EXCLUDED.local_path, archived = EXCLUDED.archived`,
+      [id, path, archived],
     );
   }
 
@@ -289,6 +289,25 @@ describe('scanBrainSources (PGLite)', () => {
     const beta = report.per_source.find(s => s.source_id === 'beta')!;
     expect(alpha.errors_by_code.NULL_BYTES).toBeGreaterThanOrEqual(1);
     expect(beta.errors_by_code.NESTED_QUOTES).toBeGreaterThanOrEqual(1);
+  });
+
+  test('automatic scan excludes archived source paths but explicit sourceId remains available', async () => {
+    const activeDir = join(tmp, 'active');
+    const archivedDir = join(tmp, 'archived');
+    mkdirSync(activeDir, { recursive: true });
+    mkdirSync(archivedDir, { recursive: true });
+    writeFileSync(join(activeDir, 'good.md'), `${fence}\ntype: x\ntitle: ok\n${fence}\n\nbody`);
+    writeFileSync(join(archivedDir, 'bad.md'), `${fence}\ntype: x\ntitle: ok\n${fence}\n\nbody\x00`);
+    await registerSource('active', activeDir);
+    await registerSource('archived', archivedDir, true);
+
+    const automatic = await scanBrainSources(engine);
+    expect(automatic.per_source.some(s => s.source_id === 'archived')).toBe(false);
+
+    const explicit = await scanBrainSources(engine, { sourceId: 'archived' });
+    expect(explicit.per_source).toHaveLength(1);
+    expect(explicit.per_source[0]!.source_id).toBe('archived');
+    expect(explicit.ok).toBe(false);
   });
 
   test('respects sourceId filter', async () => {

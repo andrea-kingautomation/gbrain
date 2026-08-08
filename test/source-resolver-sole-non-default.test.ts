@@ -43,7 +43,8 @@ function makeStub(sources: StubSource[], globalDefault: string | null = null) {
           .map(s => ({ id: s.id })) as unknown as T[];
       }
       if (sql.includes('SELECT id, local_path FROM sources WHERE local_path IS NOT NULL')) {
-        return sources.filter(s => s.local_path !== null)
+        const activeOnly = sql.includes('archived IS NOT TRUE');
+        return sources.filter(s => s.local_path !== null && (!activeOnly || s.archived !== true))
           .map(s => ({ id: s.id, local_path: s.local_path })) as unknown as T[];
       }
       if (sql.includes('SELECT id FROM sources WHERE id =')) {
@@ -142,6 +143,16 @@ describe('#1434 — sole_non_default tier', () => {
     // archived 'old-vault' shouldn't count → still one non-default → fires
     expect(result.source_id).toBe('studiovault');
     expect(result.tier).toBe('sole_non_default');
+  });
+
+  test('archived local_path never wins automatic cwd routing', async () => {
+    const engine = makeStub([
+      { id: 'default', local_path: null },
+      { id: 'old-vault', local_path: '/Users/india/archive', archived: true },
+    ]);
+    const result = await resolveSourceWithTier(engine, null, '/Users/india/archive/project');
+    expect(result.source_id).toBe('default');
+    expect(result.tier).toBe('seed_default');
   });
 
   test('resolveSourceId mirrors resolveSourceWithTier on the new tier', async () => {
