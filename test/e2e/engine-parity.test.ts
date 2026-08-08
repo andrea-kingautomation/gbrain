@@ -799,11 +799,20 @@ describeBoth('Engine parity — relationalFanout', () => {
     expect(pg.map(r => r.slug)).not.toContain('people/ep-mentioner');
   });
 
-  test('connects (multi-seed, both) identical across engines', async () => {
+  test('connects (multi-seed, both) identical and deterministic across engines', async () => {
     const seeds = ['companies/ep-widget', 'companies/ep-other'];
     const pg = await pgEngine.relationalFanout(seeds, { direction: 'both' });
     const pglite = await pgliteEngine.relationalFanout(seeds, { direction: 'both' });
     expect(shape(pg)).toEqual(shape(pglite));
+
+    const reversedSeeds = [...seeds].reverse();
+    const pgReversed = await pgEngine.relationalFanout(reversedSeeds, { direction: 'both' });
+    const pgliteReversed = await pgliteEngine.relationalFanout(reversedSeeds, { direction: 'both' });
+    expect(shape(pgReversed)).toEqual(shape(pg));
+    expect(shape(pgliteReversed)).toEqual(shape(pglite));
+
+    const sharedNeighbor = pg.find(r => r.slug === 'people/ep-inv-a');
+    expect(sharedNeighbor?.path).toEqual(['companies/ep-other', 'people/ep-inv-a']);
   });
 });
 
