@@ -33,11 +33,12 @@
 
 import { describe, test, expect, beforeAll, afterAll } from 'bun:test';
 import { spawn, spawnSync } from 'child_process';
-import { randomBytes } from 'crypto';
 import {
   cpSync,
   mkdirSync,
   mkdtempSync,
+  readFileSync,
+  readdirSync,
   rmSync,
   writeFileSync,
   chmodSync,
@@ -415,27 +416,40 @@ describe('#2084 — explicit-exit teardown: every swept site exits clean, exit c
 
 describe('WAL-repair wave — corrupt persistent brain, auto-repair off: owned exit 1 (#2084 class)', () => {
   test('gbrain status on a torn-WAL brain with GBRAIN_PGLITE_WAL_REPAIR=off exits 1 (not 0, not 99)', async () => {
-    // Fixture: a fake-but-layout-valid PG17 pglite data dir whose control +
-    // WAL state is garbage, so PGlite.create aborts. With auto-repair
-    // disabled the CLI must fail LOUDLY through the owned verdict channel:
-    // real process exit 1 — never 0 (silent success over a broken brain),
-    // never 99 (Emscripten's hijacked process.exitCode, the #2084 class).
+    // Fixture: create a REAL persistent PGLite brain, cleanly shut it down,
+    // then corrupt every actual WAL segment using the same deterministic
+    // whole-segment 0xff overwrite as pglite-wal-repair.serial.test.ts.
+    // Random bytes are not a valid corruption fixture: some random control/WAL
+    // combinations can boot, which made the full E2E assertion nondeterministic.
+    // With auto-repair disabled the CLI must fail LOUDLY through the owned
+    // verdict channel: exit 1, never silent 0 or Emscripten 99.
     const corruptHome = mkdtempSync(join(tmpdir(), 'gbrain-pglite-corrupt-'));
     try {
-      const dataDir = join(corruptHome, 'brain.pglite');
-      // GBRAIN_HOME is a parent dir: config lives at <home>/.gbrain/config.json.
-      mkdirSync(join(corruptHome, '.gbrain'), { recursive: true });
-      writeFileSync(
-        join(corruptHome, '.gbrain', 'config.json'),
-        JSON.stringify({ engine: 'pglite', database_path: dataDir }, null, 2) + '\n',
-        'utf-8',
+      const corruptEnv = { ...runEnv, GBRAIN_HOME: corruptHome };
+      const initResult = spawnSync(
+        SHIM_PATH,
+        ['init', '--pglite', '--no-embedding', '--non-interactive'],
+        { cwd: REPO_ROOT, env: corruptEnv, encoding: 'utf-8', timeout: 60_000 },
       );
-      mkdirSync(join(dataDir, 'base'), { recursive: true });
-      mkdirSync(join(dataDir, 'global'), { recursive: true });
-      mkdirSync(join(dataDir, 'pg_wal'), { recursive: true });
-      writeFileSync(join(dataDir, 'PG_VERSION'), '17\n', 'utf-8');
-      writeFileSync(join(dataDir, 'global', 'pg_control'), randomBytes(8192));
-      writeFileSync(join(dataDir, 'pg_wal', '000000010000000000000001'), randomBytes(1024));
+      if (initResult.status !== 0) {
+        throw new Error(
+          `corrupt-fixture init failed (code=${initResult.status}):\n` +
+            `STDOUT:\n${initResult.stdout}\nSTDERR:\n${initResult.stderr}`,
+        );
+      }
+      const config = JSON.parse(
+        readFileSync(join(corruptHome, '.gbrain', 'config.json'), 'utf-8'),
+      ) as { database_path?: string };
+      const dataDir = String(config.database_path || '');
+      expect(dataDir.length).toBeGreaterThan(0);
+      const walDir = join(dataDir, 'pg_wal');
+      const segments = readdirSync(walDir).filter((name) => /^[0-9A-F]{24}$/.test(name));
+      expect(segments.length).toBeGreaterThan(0);
+      for (const segment of segments) {
+        const path = join(walDir, segment);
+        const size = readFileSync(path).length;
+        writeFileSync(path, Buffer.alloc(size, 0xff));
+      }
 
       const { code, stdout, stderr, durationMs } = await runWithTimeout(
         ['status'],
