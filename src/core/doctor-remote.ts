@@ -257,8 +257,8 @@ export async function collectRemoteDoctorReport(
 /**
  * v0.42.0.0 D11: thin-client orphan_ratio check.
  *
- * Calls `find_orphans` MCP op (read scope) to get the same data the
- * local `gbrain doctor` `orphan_ratio` check uses. Computes the ratio,
+ * Calls `find_orphans` MCP op (read scope) with the same entity-page filter
+ * used by local doctor. Computes the ratio,
  * applies the same thresholds (vacuous <100 entity, warn >0.5, fail
  * >0.8), but emits an OPERATOR-POINTING hint: thin-client users can't
  * run `gbrain extract links --by-mention` themselves — they need to
@@ -279,7 +279,10 @@ export async function runOrphanRatioCheck(config: GBrainConfig): Promise<RemoteC
     const raw = await callRemoteTool(
       config,
       'find_orphans',
-      { include_pseudo: false },
+      {
+        include_pseudo: false,
+        page_types: ['person', 'company', 'organization', 'entity'],
+      },
       { timeoutMs: 5000 },
     );
     data = unpackToolResult<OrphanData>(raw);
@@ -291,15 +294,14 @@ export async function runOrphanRatioCheck(config: GBrainConfig): Promise<RemoteC
       detail: { network_error: e instanceof Error ? e.message : String(e) },
     };
   }
-  // Entity-count gate uses total_linkable as a proxy (the underlying op
-  // doesn't expose entity count directly; total_linkable is the same
-  // denominator the local check uses).
+  // The MCP query is already entity-type scoped, so total_linkable is the
+  // same entity-page denominator used by local doctor.
   const entityCount = data.total_linkable;
   if (entityCount < 100) {
     return {
       name: 'orphan_ratio',
       status: 'ok',
-      message: `Vacuous: ${entityCount} linkable pages (<100). Orphan ratio not meaningful at this scale.`,
+      message: `Vacuous: ${entityCount} entity pages (<100). Orphan ratio not meaningful at this scale.`,
     };
   }
   const ratio = entityCount > 0 ? data.total_orphans / entityCount : 0;
@@ -314,20 +316,20 @@ export async function runOrphanRatioCheck(config: GBrainConfig): Promise<RemoteC
     return {
       name: 'orphan_ratio',
       status: 'fail',
-      message: `Orphan ratio ${pct}% (${data.total_orphans}/${entityCount} linkable pages have no inbound links). ${hint}`,
+      message: `Entity orphan ratio ${pct}% (${data.total_orphans}/${entityCount} entity pages have no inbound links). ${hint}`,
     };
   }
   if (ratio > 0.5) {
     return {
       name: 'orphan_ratio',
       status: 'warn',
-      message: `Orphan ratio ${pct}% (${data.total_orphans}/${entityCount} linkable pages have no inbound links). ${hint}`,
+      message: `Entity orphan ratio ${pct}% (${data.total_orphans}/${entityCount} entity pages have no inbound links). ${hint}`,
     };
   }
   return {
     name: 'orphan_ratio',
     status: 'ok',
-    message: `Orphan ratio ${pct}% (${data.total_orphans}/${entityCount} linkable pages)`,
+    message: `Entity orphan ratio ${pct}% (${data.total_orphans}/${entityCount} entity pages)`,
   };
 }
 

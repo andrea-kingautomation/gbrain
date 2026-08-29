@@ -76,26 +76,10 @@ const SCORING_HEAD_TRIGGER_THRESHOLD = 0.3;
  */
 const SCORING_MIN_ACCEPTANCE = 0.05;
 
-/**
- * Absolute-anchor escape from the ratio floor (v0.42.39.0, KoA).
- *
- * The 0.05 ratio floor is defeated by GENUINE multi-turn conversations
- * whose message BODIES are very long: KoA/OpenClaw seat-export topics
- * routinely carry plan-mode dumps, repeated `{"action":...}` blobs, and
- * pasted logs between speaker turns. A founder topic with ~40 timestamped
- * `**[2026-06-07 16:22:50] andrea** (user):` turns over 2100 lines scores
- * ~0.019 — below the floor — yet is unambiguously a transcript (measured:
- * 21% of koa-conversations + 50% of personal-conversations pages were
- * dropped this way). The floor's REAL target is a single stray anchor in
- * prose, which is an ABSOLUTE count of 1, not a ratio.
- *
- * So when the winner is a PRECISE pattern (timestamped; NOT a broad
- * `score_full_body` prose matcher like bold-name-no-time) we also accept on
- * absolute anchor count: 2+ full `**[ISO datetime] speaker** (role):` lines
- * never occur in non-conversational prose, so 2 is a safe minimum and still
- * recovers real 2-turn exchanges (e.g. a long inbound-lead question + one
- * long reply). Broad no-time matchers keep the strict ratio-only floor.
- */
+// A precise timestamped pattern with two or more whole-line anchors is enough
+// to recover a genuine long-body transcript whose message text dilutes the
+// ratio below the normal acceptance floor. Broad score_full_body patterns are
+// excluded from this escape so one stray prose label still stays no_match.
 const SCORING_MIN_ABS_ANCHORS = 2;
 
 /**
@@ -322,6 +306,13 @@ function monthNameToIndex(name: string): number {
   return MONTHS_SHORT.indexOf(name.toLowerCase().slice(0, 3));
 }
 
+// #4136 — folded-heading detection constants. The label capture is capped at
+// 48 chars (privacy: labels can carry page text into stderr/JSON) and the
+// list at 10 entries per parse.
+const UNRECOGNIZED_HEADING_RE = /^(#{1,6})\s+(.{1,48}?)\s*:?\s*$/;
+const FENCE_RE = /^(```|~~~)/;
+const MAX_UNRECOGNIZED_HEADINGS = 10;
+
 /**
  * Apply ONE pattern to the full body. Returns the matched messages
  * with their ISO timestamps. Handles multi-line continuations per D5.
@@ -340,6 +331,7 @@ export function applyPattern(
   body: string,
   entry: PatternEntry,
   dateCtx: DateContext,
+  diag?: { unrecognized_headings: string[] },
 ): MatchedMessage[] {
   if (!body) return [];
   const out: MatchedMessage[] = [];
@@ -349,10 +341,50 @@ export function applyPattern(
   // while advancing a local date anchor as those headings are encountered.
   const runningCtx: DateContext = { ...dateCtx };
   const dateHeaderRe = /^#{1,4}\s+(\d{4}-\d{2}-\d{2})\s*$/;
+  // #4136 — when the WINNING pattern anchors on headings, a heading-shaped
+  // line whose label is outside the pattern's closed speaker set is not
+  // rejected and not reported: it folds into the PREVIOUS turn's body
+  // (heading line and all), or drops silently before the first anchor.
+  // The parse still returns phase 'regex_match', so one speaker gets
+  // credited with another's words and nothing downstream declines. Detection
+  // is diagnostic-only (zero behavior change here): collect the folded
+  // labels so ParseResult can surface them. Fence-aware so a transcript
+  // whose answers paste markdown/shell inside code fences is not flagged.
+  const headingAnchored =
+    diag !== undefined &&
+    entry.multi_line === true &&
+    entry.score_continuations_as_body === true &&
+    (entry.test_positive ?? []).some((s) => /^#{2,3}\s/.test(s));
+  let fenceMarker: '```' | '~~~' | null = null;
+  const collectFoldedHeading = (line: string): void => {
+    if (!headingAnchored || fenceMarker !== null || !diag) return;
+    if (diag.unrecognized_headings.length >= MAX_UNRECOGNIZED_HEADINGS) return;
+    const h = UNRECOGNIZED_HEADING_RE.exec(line);
+    if (!h) return;
+    const label = h[2].trim();
+    // Speaker-shaped-ish cap: ≤3 whitespace tokens, no sentence punctuation
+    // tail — long prose headings are section titles, not lost speakers.
+    if (!label || label.split(/\s+/).length > 3 || /[.!?]$/.test(label)) return;
+    if (entry.regex.test(line)) return; // a real anchor, not a fold
+    if (!diag.unrecognized_headings.includes(label)) diag.unrecognized_headings.push(label);
+  };
   for (let i = 0; i < lines.length; i++) {
     const rawLine = lines[i];
     const line = rawLine.trim();
     if (!line) continue;
+    if (headingAnchored) {
+      // Adversarial F6 (partial): a fence closes only on ITS OWN marker —
+      // CommonMark treats a mismatched marker as content, so `~~~` must not
+      // close a ```-opened fence. (An UNCLOSED fence still suppresses
+      // detection for the rest of the document — CommonMark-consistent, and
+      // the fail direction is warn-noise-free but detection-free; noted in
+      // the PR body as a known residual for truncated-LLM-output corpora.)
+      const fm = FENCE_RE.exec(line)?.[1] as '```' | '~~~' | undefined;
+      if (fm) {
+        if (fenceMarker === null) fenceMarker = fm;
+        else if (fenceMarker === fm) fenceMarker = null;
+      }
+    }
 
     const dateHeader = dateHeaderRe.exec(line);
     if (dateHeader) {
@@ -362,6 +394,7 @@ export function applyPattern(
 
     // Quick-reject fast path.
     if (entry.quick_reject && !entry.quick_reject.test(line)) {
+      collectFoldedHeading(line); // #4136 — folded below or dropped pre-anchor
       // Continuation handling for orphan lines.
       if (out.length > 0) {
         out[out.length - 1].text = out[out.length - 1].text
@@ -385,11 +418,16 @@ export function applyPattern(
       // (Even when text_group is set, multi_line=true means SUBSEQUENT
       // non-anchor lines also absorb into this message's body.)
       out.push({ speaker, timestamp: iso, text });
-    } else if (out.length > 0) {
-      // Continuation line.
-      out[out.length - 1].text = out[out.length - 1].text
-        ? `${out[out.length - 1].text}\n${line}`
-        : line;
+    } else {
+      // Passed quick_reject but failed the full regex (e.g. '## Assistant
+      // Bot' against the closed-set heading pattern) — the OTHER fold site.
+      collectFoldedHeading(line); // #4136
+      if (out.length > 0) {
+        // Continuation line.
+        out[out.length - 1].text = out[out.length - 1].text
+          ? `${out[out.length - 1].text}\n${line}`
+          : line;
+      }
     }
   }
   return out;
@@ -414,36 +452,14 @@ function getNonBlankLines(body: string, headCap?: number): string[] {
  * window) and `scorePatternFull` (whole body) delegate here so the
  * quick_reject + regex loop lives in one place. Reused by
  * `parseConversation`'s fallback path which pre-splits ONCE and
- * passes the array to all 17 candidates (saves 16 redundant body
+ * passes the array to all 18 candidates (saves 17 redundant body
  * splits per fallback pass).
  */
-function countAnchoredLines(
-  lines: readonly string[],
-  entry: PatternEntry,
-): number {
+function countPreciseAnchors(lines: readonly string[], entry: PatternEntry): number {
   let anchored = 0;
-  let anchorCandidates = 0;
-  let firstLineAnchored = false;
-  for (let index = 0; index < lines.length; index++) {
-    const line = lines[index];
-    if (entry.quick_reject && !entry.quick_reject.test(line)) {
-      continue;
-    }
-    anchorCandidates++;
-    if (entry.regex.test(line)) {
-      anchored++;
-      if (index === 0) firstLineAnchored = true;
-    }
-  }
-
-  if (
-    entry.score_continuations_as_body &&
-    entry.multi_line &&
-    entry.quick_reject &&
-    anchorCandidates > 0 &&
-    (anchored >= 2 || firstLineAnchored)
-  ) {
-    return anchored / anchorCandidates;
+  for (const line of lines) {
+    if (entry.quick_reject && !entry.quick_reject.test(line)) continue;
+    if (entry.regex.test(line)) anchored++;
   }
   return anchored;
 }
@@ -453,7 +469,69 @@ function scoreFromLines(
   entry: PatternEntry,
 ): number {
   if (lines.length === 0) return 0;
-  return countAnchoredLines(lines, entry) / lines.length;
+  let anchored = 0;
+  let anchorCandidates = 0;
+  let firstAnchorIndex = -1;
+  // Only populated when score_continuations_min_distinct_speakers is set
+  // (avoids a Set + exec() per line for every other pattern, which only
+  // needs the boolean match `test()` already gave before this change).
+  const tracksDistinctSpeakers =
+    entry.score_continuations_min_distinct_speakers !== undefined;
+  const distinctSpeakers: Set<string> | undefined = tracksDistinctSpeakers
+    ? new Set()
+    : undefined;
+  for (let index = 0; index < lines.length; index++) {
+    const line = lines[index];
+    if (entry.quick_reject && !entry.quick_reject.test(line)) {
+      continue;
+    }
+    anchorCandidates++;
+    let isMatch: boolean;
+    if (distinctSpeakers) {
+      const m = entry.regex.exec(line);
+      isMatch = m !== null;
+      if (m) {
+        const speaker = m[entry.captures.speaker_group];
+        if (speaker) distinctSpeakers.add(speaker);
+      }
+    } else {
+      isMatch = entry.regex.test(line);
+    }
+    if (isMatch) {
+      anchored++;
+        if (firstAnchorIndex === -1) firstAnchorIndex = index;
+    }
+  }
+
+  const distinctSpeakersOk =
+    entry.score_continuations_min_distinct_speakers === undefined ||
+    (distinctSpeakers?.size ?? 0) >=
+      entry.score_continuations_min_distinct_speakers;
+  // Bounds how far into the body the FIRST anchor may appear before the
+  // candidate-only density score activates. A genuine export's anchor
+  // grammar starts near the top of the body (allowing a short title/heading
+  // preamble); an anchor pair merely embedded deep inside an unrelated long
+  // document — which would otherwise get the SAME density immunity once
+  // both roles are present — sits far past this bound instead.
+  const preambleOk =
+    entry.score_continuations_max_preamble_lines === undefined ||
+    (firstAnchorIndex !== -1 &&
+      firstAnchorIndex <= entry.score_continuations_max_preamble_lines);
+
+  if (
+    entry.score_continuations_as_body &&
+    entry.multi_line &&
+    entry.quick_reject &&
+    anchorCandidates > 0 &&
+    anchored >= 2 &&
+    distinctSpeakersOk &&
+    preambleOk
+  ) {
+    // AgentChakra conversation acceptance floor: one stray first-line anchor
+    // must not turn a long prose body into a conversation.
+    return anchored / anchorCandidates;
+  }
+  return anchored / lines.length;
 }
 
 /**
@@ -565,10 +643,6 @@ export function parseConversation(
 
   const top = scored[0];
   const patternsScored = scored.length;
-  // The pattern actually used to segment. Normally the ratio winner; the
-  // absolute-anchor escape below may re-point it to a precise pattern that
-  // the ratio winner buried (see the floor block).
-  let winnerEntry: PatternEntry = top.entry;
 
   // v0.41.29.0 (Codex F1): broad no-time patterns (`bold-name-no-time`,
   // regex matches any `**Label:** text`) can win the HEAD pass on a
@@ -585,31 +659,16 @@ export function parseConversation(
     top.score = scoreFromLines(getNonBlankLines(body), top.entry);
   }
 
-  // Minimum acceptance floor (closes Codex P1 #2): an essay with
-  // one stray `**Name** (date time):` line scores ~1/300 ≈ 0.003 —
-  // below the 5% floor we stay no_match instead of returning a
-  // 1-message false positive. Real transcript pages typically score
-  // 0.5+ and sail through.
-  //
-  // v0.42.39.0 (KoA) absolute-anchor escape: a precise (timestamped, non
-  // score_full_body) pattern that anchors SCORING_MIN_ABS_ANCHORS+ whole
-  // lines is a genuine multi-turn conversation even when long message bodies
-  // dilute the ratio below 0.05. See SCORING_MIN_ABS_ANCHORS.
-  //
-  // Crucially we do NOT judge by the ratio winner (top.entry). A broad prose
-  // matcher (bold-name-no-time) can outscore a precise pattern on RATIO in a
-  // huge document — agent replies are full of markdown `**Label:**` lines —
-  // burying a real timestamped transcript (measured on a 294 KB BD topic with
-  // 5 koa-telegram-seat turns). So scan all candidates for the precise pattern
-  // with the MOST anchored lines and parse with that one when it clears the
-  // bar. Broad no-time matchers never qualify (a few coincidental bold labels
-  // in prose must stay no_match).
+  // Minimum acceptance floor. A single stray anchor stays no_match, while
+  // a precise timestamped pattern with two or more whole-line anchors may
+  // recover a genuine long-body transcript whose ratio is diluted by message text.
+  let winnerEntry = top.entry;
   if (top.score < SCORING_MIN_ACCEPTANCE) {
     const allLines = getNonBlankLines(body);
     let bestPrecise: { entry: PatternEntry; anchors: number; priority: number } | null = null;
     for (const entry of candidates) {
       if (entry.score_full_body) continue;
-      const anchors = countAnchoredLines(allLines, entry);
+      const anchors = countPreciseAnchors(allLines, entry);
       if (anchors === 0) continue;
       const priority = priorityOf(entry.id);
       if (
@@ -633,7 +692,8 @@ export function parseConversation(
     winnerEntry = bestPrecise.entry;
   }
 
-  const messages = applyPattern(body, winnerEntry, dateCtx);
+  const diag = { unrecognized_headings: [] as string[] };
+  const messages = applyPattern(body, winnerEntry, dateCtx, diag);
 
   // Timezone warning surface (D19).
   let timezone_warning: string | undefined;
@@ -651,6 +711,10 @@ export function parseConversation(
     matched_pattern_id: winnerEntry.id,
     patterns_scored: patternsScored,
     timezone_warning,
+    // #4136 — populated unconditionally (NOT behind opts.diagnostic): the
+    // extractor's decline gate depends on it. Undefined when empty.
+    unrecognized_headings:
+      diag.unrecognized_headings.length > 0 ? diag.unrecognized_headings : undefined,
     unmatched_line_count: opts.diagnostic
       ? body
           .split(/\r?\n/)

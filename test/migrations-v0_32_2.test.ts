@@ -296,6 +296,25 @@ describe('phaseCVerify', () => {
     expect(r.detail).toContain('pages_checked=1');
   });
 
+  test('ignores row-numbered cli conversation facts that are not fence-owned', async () => {
+    await seedLegacyFact({ entity_slug: 'people/alice', fact: 'Fence-owned fact' });
+    await __testing.phaseBFenceFacts(engine, OPTS);
+    // extract-conversation-facts writes row-numbered cli: facts for provenance,
+    // but these facts are deliberately not represented in the Markdown fence.
+    // Phase C must verify only fence-owned rows, matching extract_facts' preserve rule.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    await (engine as any).db.query(
+      `INSERT INTO facts (source_id, entity_slug, fact, kind, visibility, notability,
+                          valid_from, source, confidence, row_num, source_markdown_slug)
+       VALUES ('default', 'people/alice', 'CLI-only fact', 'fact', 'private', 'medium',
+               now(), 'cli:extract-conversation-facts', 1.0, 99, 'people/alice')`,
+    );
+
+    const r = await __testing.phaseCVerify(engine, OPTS);
+    expect(r.status).toBe('complete');
+    expect(r.detail).toContain('pages_checked=1');
+  });
+
   test('returns failed when fence row count drifts from DB', async () => {
     await seedLegacyFact({ entity_slug: 'people/alice', fact: 'F1' });
     await __testing.phaseBFenceFacts(engine, OPTS);
@@ -313,6 +332,31 @@ describe('phaseCVerify', () => {
     expect(r.status).toBe('failed');
     expect(r.detail).toContain('drifted');
     expect(r.detail).toContain('people/alice');
+  });
+
+  test('ignores conversation-miner facts that have no markdown fence', async () => {
+    await seedLegacyFact({ entity_slug: 'people/alice', fact: 'F1' });
+    await __testing.phaseBFenceFacts(engine, OPTS);
+
+    const slug = 'cursor-sessions/chat-1';
+    mkdirSync(join(brainDir, 'cursor-sessions'), { recursive: true });
+    writeFileSync(
+      join(brainDir, `${slug}.md`),
+      '---\ntype: conversation\n---\n\n# chat\n\nhello\n',
+      'utf-8',
+    );
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    await (engine as any).db.query(
+      `INSERT INTO facts (source_id, entity_slug, fact, kind, visibility, notability,
+                          valid_from, source, confidence, row_num, source_markdown_slug)
+       VALUES ('default', NULL, 'Said hello', 'fact', 'private', 'medium',
+               now(), 'cli:extract-conversation-facts:seg', 1.0, 1, $1)`,
+      [slug],
+    );
+
+    const r = await __testing.phaseCVerify(engine, OPTS);
+    expect(r.status).toBe('complete');
+    expect(r.detail).toContain('pages_checked=1');
   });
 });
 

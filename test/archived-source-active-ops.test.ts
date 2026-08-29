@@ -32,15 +32,16 @@ describe('archived source active-operation boundary', () => {
   });
 
   test('doctor freshness, drift, and filesystem checks exclude archived sources', () => {
-    const text = source('src/commands/doctor.ts');
-    expect(text).toContain(
+    const doctor = source('src/commands/doctor.ts');
+    const extractionSync = source('src/commands/doctor/checks/extraction-sync.ts');
+    const remote = source('src/commands/doctor/report-remote.ts');
+    expect(extractionSync).toContain(
       'SELECT id, name, local_path, last_sync_at, last_commit, chunker_version, newest_content_at FROM sources WHERE local_path IS NOT NULL AND archived IS NOT TRUE',
     );
     expect(
-      text.match(/SELECT id, local_path FROM sources WHERE local_path IS NOT NULL AND archived IS NOT TRUE/g),
+      extractionSync.match(/SELECT id, local_path FROM sources WHERE local_path IS NOT NULL AND archived IS NOT TRUE/g),
     ).toHaveLength(2);
-    expect(
-      text.match(/SELECT id, local_path FROM sources WHERE archived IS NOT TRUE/g),
-    ).toHaveLength(2);
+    expect(doctor).toContain('SELECT id, local_path FROM sources WHERE archived IS NOT TRUE');
+    expect(remote).toContain('SELECT id, local_path FROM sources WHERE archived IS NOT TRUE');
   });
 });

@@ -123,6 +123,11 @@ describe('v0.42.0.0 e2e — orphan reduction via --by-mention', () => {
     finally { restoreCli(); }
     // Direct pure-fn call.
     const direct = await getOrphansData(engine, { includePseudo: false });
+    // AgentChakra G22 E2E: doctor health is entity-scoped while broad orphan inventory remains broad.
+    const entityScoped = await getOrphansData(engine, {
+      includePseudo: false,
+      pageTypes: ['person', 'company', 'organization', 'entity'],
+    });
     // CLI `gbrain orphans --count` output.
     captureCli();
     try { await runOrphans(engine, ['--count']); }
@@ -149,7 +154,7 @@ describe('v0.42.0.0 e2e — orphan reduction via --by-mention', () => {
     const orphanCheck = doctorJson.checks.find((c: any) => c.name === 'orphan_ratio');
     expect(orphanCheck).toBeDefined();
     // Doctor message includes the numerator/denominator string.
-    expect(orphanCheck.message).toContain(`${direct.total_orphans}/${direct.total_linkable}`);
+    expect(orphanCheck.message).toContain(`${entityScoped.total_orphans}/${entityScoped.total_linkable}`);
   });
 
   test('3. re-run idempotency — second --by-mention produces 0 new mention rows', async () => {
